@@ -1,26 +1,25 @@
 import * as THREE from 'three';
 import type { DhakaTile } from '../world/dhakaTile';
 
-/** Traffic AI — NPC vehicles driving the road graph. Each car follows road
- *  segments, slows before intersections, and stops behind the vehicle ahead.
- *  Distance-based activation: beyond TRAFFIC_FAR they freeze (hidden). */
+/** Traffic AI — NPC vehicles driving the road graph, obeying traffic lights,
+ *  and keeping distance from the vehicle ahead. Distance-based activation. */
 
 export interface TrafficCar {
   x: number; z: number;
   yaw: number;
   speed: number;
   targetSpeed: number;
-  // current segment
   fx: number; fz: number; tx: number; tz: number;
   t: number;
-  width: number; // segment width -> lane offset
-  lane: number;  // -1 or 1 side of centerline
+  width: number;
+  lane: number;
+  axis: 'ns' | 'ew';
   active: boolean;
 }
 
 export interface TrafficSystem {
   cars: TrafficCar[];
-  update(dt: number, px: number, pz: number): void;
+  update(dt: number, px: number, pz: number, shouldStop?: (x: number, z: number, axis: 'ns' | 'ew') => boolean): void;
   dispose(): void;
 }
 
@@ -49,9 +48,9 @@ export function createTrafficSystem(
     const laneOff = (r.width / 4) * lane;
     const dx = (r.x2 - r.x1) / len;
     const dz = (r.z2 - r.z1) / len;
-    // perpendicular offset
     const ox = -dz * laneOff;
     const oz = dx * laneOff;
+    const axis: 'ns' | 'ew' = Math.abs(dz) > Math.abs(dx) ? 'ns' : 'ew';
     cars.push({
       x: r.x1 + (r.x2 - r.x1) * t + ox,
       z: r.z1 + (r.z2 - r.z1) * t + oz,
@@ -62,11 +61,11 @@ export function createTrafficSystem(
       t,
       width: r.width,
       lane,
+      axis,
       active: true
     });
   }
 
-  // instanced rendering
   const bodyGeo = new THREE.BoxGeometry(1.7, 1.1, 3.9);
   const bodyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45, metalness: 0.4 });
   const bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, count);
@@ -87,14 +86,18 @@ export function createTrafficSystem(
     const c = cars[i];
     mx.makeRotationY(c.yaw).setPosition(c.x, 0.55, c.z);
     bodies.setMatrixAt(i, mx);
-    // roof offset behind center (local -z is forward for yaw math)
     const rx = c.x - Math.sin(c.yaw) * 0.3;
     const rz = c.z - Math.cos(c.yaw) * 0.3;
     mx.makeRotationY(c.yaw).setPosition(rx, 1.35, rz);
     roofs.setMatrixAt(i, mx);
   }
 
-  function update(dt: number, px: number, pz: number): void {
+  function update(
+    dt: number,
+    px: number,
+    pz: number,
+    shouldStop?: (x: number, z: number, axis: 'ns' | 'ew') => boolean
+  ): void {
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
       const dist = Math.hypot(c.x - px, c.z - pz);
@@ -109,8 +112,18 @@ export function createTrafficSystem(
       }
       c.active = true;
 
-      // simple car-following: slow if any car ahead within 7m in heading dir
       let target = c.targetSpeed;
+
+      // traffic light obedience
+      if (shouldStop) {
+        const lookAheadX = c.x + Math.sin(c.yaw) * 8;
+        const lookAheadZ = c.z + Math.cos(c.yaw) * 8;
+        if (shouldStop(lookAheadX, lookAheadZ, c.axis)) {
+          target = Math.min(target, 2.5);
+        }
+      }
+
+      // car-following
       if (dist < TRAFFIC_NEAR) {
         for (const o of cars) {
           if (o === c || !o.active) continue;
@@ -124,7 +137,8 @@ export function createTrafficSystem(
           }
         }
       }
-      c.speed += Math.max(-8 * dt, Math.min(6 * dt, target - c.speed));
+
+      c.speed += Math.max(-9 * dt, Math.min(6 * dt, target - c.speed));
       c.speed = Math.max(0, c.speed);
 
       const segLen = Math.hypot(c.tx - c.fx, c.tz - c.fz) || 1;
@@ -132,7 +146,6 @@ export function createTrafficSystem(
       const dz = (c.tz - c.fz) / segLen;
       c.t += (c.speed * dt) / segLen;
       if (c.t >= 1) {
-        // pick a new road starting near the endpoint
         let best = 0;
         let bestD = Infinity;
         for (let k = 0; k < roads.length; k++) {
@@ -147,13 +160,13 @@ export function createTrafficSystem(
         c.fx = r.x1; c.fz = r.z1; c.tx = r.x2; c.tz = r.z2;
         c.t = 0;
         c.width = r.width;
+        c.axis = Math.abs(c.tz - c.fz) > Math.abs(c.tx - c.fx) ? 'ns' : 'ew';
       }
       const laneOff = (c.width / 4) * c.lane;
       const ox = -dz * laneOff;
       const oz = dx * laneOff;
       c.x = c.fx + (c.tx - c.fx) * c.t + ox;
       c.z = c.fz + (c.tz - c.fz) * c.t + oz;
-      // face driving direction (lane -1 drives reverse along segment)
       c.yaw = c.lane === 1 ? Math.atan2(dx, dz) : Math.atan2(-dx, -dz);
 
       place(i);
