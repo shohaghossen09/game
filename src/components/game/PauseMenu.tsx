@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useGameStore } from '@/game/core/store';
 import { travelState } from '@/game/core/travelState';
+import { fetchAuthStatus, type AuthStatus } from '@/game/backend/client';
 
 export default function PauseMenu() {
   const quality = useGameStore((s) => s.quality);
@@ -12,6 +13,15 @@ export default function PauseMenu() {
   const ready = useGameStore((s) => s.progress >= 100);
   const [tab, setTab] = useState<'main' | 'settings' | 'saves' | 'map'>('main');
   const [msg, setMsg] = useState('');
+  const [auth, setAuth] = useState<AuthStatus>({ authenticated: false });
+  const [cloudMsg, setCloudMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (paused) {
+      void fetchAuthStatus().then(setAuth);
+      setCloudMsg(travelState.saveResult);
+    }
+  }, [paused, tab]);
 
   if (!ready || !paused) return null;
 
@@ -28,10 +38,36 @@ export default function PauseMenu() {
         <h2>PAUSED</h2>
         {tab === 'main' && (
           <>
+            <div className="pause-hint" style={{ marginBottom: 10 }}>
+              {auth.authenticated
+                ? `Signed in as ${auth.username} — cloud saves active`
+                : 'Not signed in — saves are local only. Sign in for cloud saves.'}
+            </div>
             <button className="menu-btn" onClick={() => setPaused(false)}>Resume</button>
             <button className="menu-btn" onClick={() => setTab('map')}>Bangladesh Map</button>
             <button className="menu-btn" onClick={() => setTab('saves')}>Save / Load</button>
             <button className="menu-btn" onClick={() => setTab('settings')}>Graphics Settings</button>
+            {auth.authenticated ? (
+              <button
+                className="menu-btn"
+                onClick={() => {
+                  void fetch('/api/auth/logout', { method: 'POST' });
+                  setAuth({ authenticated: false });
+                  setMsg('Signed out.');
+                }}
+              >
+                Sign Out
+              </button>
+            ) : (
+              <button
+                className="menu-btn"
+                onClick={() => {
+                  window.location.href = '/login';
+                }}
+              >
+                Sign In / Register
+              </button>
+            )}
             <div className="pause-hint">
               WASD move · Shift run · Space jump · E vehicle · Esc pause
             </div>
@@ -55,14 +91,15 @@ export default function PauseMenu() {
         )}
         {tab === 'saves' && (
           <>
-            <h3>Save / Load</h3>
+            <h3>Save / Load {auth.authenticated ? '(Cloud)' : '(Local)'}</h3>
             {[1, 2, 3].map((slot) => (
               <div key={slot} className="save-row">
                 <button
                   className="menu-btn half"
                   onClick={() => {
                     travelState.saveRequest = { slot, kind: 'save' };
-                    setMsg(`Saved to slot ${slot}`);
+                    setMsg(`Saving slot ${slot}…`);
+                    setTimeout(() => setCloudMsg(travelState.saveResult), 400);
                   }}
                 >
                   Save {slot}
@@ -71,14 +108,15 @@ export default function PauseMenu() {
                   className="menu-btn half"
                   onClick={() => {
                     travelState.saveRequest = { slot, kind: 'load' };
-                    setMsg(describeSave(slot));
+                    setMsg(`Loading slot ${slot}…`);
+                    setTimeout(() => setCloudMsg(travelState.saveResult), 400);
                   }}
                 >
                   Load {slot}
                 </button>
               </div>
             ))}
-            {msg && <div className="pause-hint">{msg}</div>}
+            {(cloudMsg || msg) && <div className="pause-hint">{cloudMsg ?? msg}</div>}
             <button className="menu-btn" onClick={() => setTab('main')}>Back</button>
           </>
         )}
@@ -111,16 +149,4 @@ export default function PauseMenu() {
       </div>
     </div>
   );
-}
-
-function describeSave(slot: number): string {
-  if (typeof localStorage === 'undefined') return `Slot ${slot} unavailable`;
-  const raw = localStorage.getItem(`bls_save_v1_slot_${slot}`);
-  if (!raw) return `Slot ${slot} is empty`;
-  try {
-    const data = JSON.parse(raw) as { savedAt: number };
-    return `Loaded slot ${slot} (saved ${new Date(data.savedAt).toLocaleString()})`;
-  } catch {
-    return `Slot ${slot} unreadable`;
-  }
 }
