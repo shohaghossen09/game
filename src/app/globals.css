@@ -7,6 +7,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #07131c; c
 .hud-fps { position: fixed; top: 12px; right: 12px; z-index: 10; font-size: 11px; opacity: .65; text-shadow: 0 1px 3px #000; pointer-events: none; }
 .hud-speed { position: fixed; bottom: 14px; right: 14px; z-index: 10; font-size: 24px; font-weight: 800; text-shadow: 0 1px 4px #000; font-variant-numeric: tabular-nums; pointer-events: none; }
 .hud-prompt { position: fixed; left: 50%; bottom: 19%; transform: translateX(-50%); z-index: 10; background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.25); padding: 8px 18px; border-radius: 8px; font-size: 14px; pointer-events: none; }
+.minimap { position: fixed; top: 44px; right: 12px; z-index: 10; border-radius: 50%; box-shadow: 0 2px 10px rgba(0,0,0,.5); pointer-events: none; }
 .loading { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; background: linear-gradient(165deg, #032c44 0%, #0a2415 55%, #081016 100%); transition: opacity .7s; }
 .loading.done { opacity: 0; pointer-events: none; }
 .loading h1 { font-size: clamp(20px, 4.2vw, 40px); letter-spacing: 3px; font-weight: 800; }
@@ -19,3 +20,11 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #07131c; c
 .joy-knob { position: absolute; left: 37px; top: 37px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.28); pointer-events: none; }
 .tbtns { position: fixed; right: 16px; bottom: 22px; z-index: 20; display: flex; flex-direction: column; }
 .tbtn { width: 62px; height: 62px; border-radius: 50%; background: rgba(255,255,255,.12); border: 2px solid rgba(255,255,255,.25); color: #fff; font-size: 11px; font-weight: 700; margin-top: 10px; touch-action: none; -webkit-tap-highlight-color: transparent; }
+.pause-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(4, 12, 18, 0.78); display: flex; align-items: center; justify-content: center; backdrop-filter: blur(3px); }
+.pause-card { background: #0d1a24; border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: 28px 32px; min-width: min(320px, 86vw); text-align: center; box-shadow: 0 8px 40px rgba(0,0,0,.6); }
+.pause-card h2 { font-size: 26px; letter-spacing: 4px; margin-bottom: 18px; }
+.pause-card h3 { font-size: 13px; letter-spacing: 2px; color: #9fb8c8; margin-bottom: 10px; text-transform: uppercase; }
+.menu-btn { display: block; width: 100%; margin: 8px 0; padding: 12px; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.18); border-radius: 8px; font-size: 15px; cursor: pointer; }
+.menu-btn:hover { background: rgba(255,255,255,.16); }
+.menu-btn.active { border-color: #00c853; color: #8ff; }
+.pause-hint { margin-top: 14px; font-size: 11px; color: #8fa89e; line-height: 1.6; }
