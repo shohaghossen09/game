@@ -1,9 +1,6 @@
 import { NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import {
-  authStore, registerLimiter,
-  hashPassword, validateCredentials
-} from '@/game/backend/store';
+import { stores, registerLimiter, hashPassword, validateCredentials } from '@/game/backend/store';
 
 export const runtime = 'nodejs';
 
@@ -24,8 +21,9 @@ export async function POST(req: Request) {
   const invalid = validateCredentials(username, password);
   if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
 
+  const { auth } = await stores();
   try {
-    await authStore.createUser({
+    await auth.createUser({
       id: randomUUID(),
       username: username as string,
       passHash: hashPassword(password as string),
