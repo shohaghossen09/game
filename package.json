@@ -25,5 +25,5 @@
     "@types/three": "0.160.0",
     "typescript": "5.4.5"
   },
-  "engines": { "node": "">=18.17.0" }
+  "engines": { "node": ">=18.17.0" }
 }
