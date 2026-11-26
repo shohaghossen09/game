@@ -7,7 +7,9 @@ import { createVehicle, stepVehicle, enterVehicle, exitVehicle } from '../vehicl
 import { buildWorld } from '../world/builder';
 import { loadDhakaTile } from '../world/dhakaTile';
 import { disposeMaterials } from '../world/materials';
+import { disposeProceduralTextures } from '../world/textures';
 import { detectWebGL } from './webglDetect';
+import { createPerfSampler } from './perf';
 
 export interface Engine {
   dispose(): void;
@@ -28,8 +30,8 @@ const QUALITY: Record<Quality, QualityProfile> = {
   ultra: { renderScale: 1.0, shadowMapSize: 4096, fogFar: 500, treeCount: 140, pixelRatioCap: 2 }
 };
 
-const DAY_LENGTH = 300; // seconds for a full day
-const BOOT_TIMEOUT_MS = 20_000; // watchdog (audit A3)
+const DAY_LENGTH = 300;
+const BOOT_TIMEOUT_MS = 20_000;
 
 /** rAF with a timeout fallback: rAF is throttled/paused in background
  *  tabs, which stalled the boot on production forever (audit A3). */
@@ -75,6 +77,12 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  // tone mapping: ACES gives a filmic response without fake bloom (Task 4:
+  // no excessive filters)
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+
+  const perf = createPerfSampler(renderer, cap.webgl2 ? 'webgl2' : 'webgl');
 
   // ---- context loss handling (audit A2) ----
   let contextLost = false;
@@ -181,7 +189,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   let fpsT = 0;
   let fpsN = 0;
   let hudT = 0;
-  let dayT = 0.22; // start ~07:30
+  let dayT = 0.22;
   const camState = { yaw: Math.PI, pitch: -0.18, dist: 6.4 };
   const camPos = new THREE.Vector3(4, 3, -34);
   const skyDay = new THREE.Color(0x9fb8c8);
@@ -243,9 +251,9 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     if (disposed) return;
     raf = requestAnimationFrame(loop);
     if (contextLost) {
-      // do not advance the simulation while the GPU context is gone
       return;
     }
+    const frameStart = performance.now();
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
 
@@ -301,15 +309,16 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       updateCamera(dt);
       renderer.render(scene, camera);
 
-      // First-frame gate (audit A1): Ready only after a render call
-      // completed without throwing AND the loop is alive.
       if (!firstFrameConfirmed) {
         firstFrameConfirmed = true;
         clearTimeout(watchdog);
         useGameStore.getState().setProgress(100, 'Ready');
       }
 
-      // FPS counts only confirmed renders (audit A3b)
+      // perf sampling (real measurements, 2 Hz)
+      const frameMs = performance.now() - frameStart;
+      perf.tick(frameMs);
+
       fpsT += dt;
       fpsN++;
       if (fpsT >= 0.5) {
@@ -350,6 +359,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       world.dispose();
       physics.dispose();
       disposeMaterials();
+      disposeProceduralTextures();
       renderer.dispose();
     }
   };
