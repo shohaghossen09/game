@@ -242,7 +242,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   }
 
   function frame(): Promise<void> {
-    return new Promise((r) => requestAnimationFrame(r));
+    return new Promise((r) => requestAnimationFrame(() => r()));
   }
 
   function onResize(): void {
