@@ -1,8 +1,8 @@
 {
   "name": "bangladesh-life-simulator",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Open-world life simulation of Bangladesh, playable in the browser. 64-district travel, vehicles, weather, NPCs, traffic, interiors. Original IP.",
+  "description": "Open-world life simulation of Bangladesh, playable in the browser. 64-district travel, vehicles, weather, NPCs, traffic, interiors, accounts + cloud saves. Original IP.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
