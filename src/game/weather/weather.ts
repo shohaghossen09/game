@@ -1,6 +1,6 @@
 /** Weather state machine: clear -> cloudy -> rain -> heavy rain -> thunderstorm.
- *  Transitions are time-based with hysteresis. Effects are visual + physical
- *  (road friction, visibility). Bangladesh monsoon flavor: long rain spells. */
+ *  Transitions are time-based. Effects are visual + physical (road friction,
+ *  visibility). Bangladesh monsoon flavor: long rain spells. */
 
 export type WeatherKind = 'clear' | 'cloudy' | 'rain' | 'heavyRain' | 'thunderstorm';
 
@@ -16,6 +16,8 @@ export interface WeatherState {
   darkness: number;
   /** thunder flash countdown, seconds; 0 = no flash */
   flash: number;
+  /** internal transition timer, seconds */
+  timerAccum: number;
 }
 
 const DURATION: Record<WeatherKind, number> = {
@@ -34,6 +36,14 @@ const NEXT: Record<WeatherKind, WeatherKind> = {
   thunderstorm: 'clear'
 };
 
+const TARGET_INTENSITY: Record<WeatherKind, number> = {
+  clear: 0,
+  cloudy: 0.15,
+  rain: 0.55,
+  heavyRain: 0.8,
+  thunderstorm: 1
+};
+
 export function createWeather(): WeatherState {
   return {
     kind: 'clear',
@@ -41,25 +51,23 @@ export function createWeather(): WeatherState {
     visibility: 1,
     grip: 1,
     darkness: 1,
-    flash: 0
+    flash: 0,
+    timerAccum: 0
   };
 }
 
 /** Advance weather. dt seconds. Returns true if the kind changed this frame. */
 export function stepWeather(w: WeatherState, dt: number, rnd: () => number): boolean {
-  w.timerAccum = (w.timerAccum ?? 0) + dt;
+  w.timerAccum += dt;
   const target = DURATION[w.kind];
 
-  // intensity eases toward the kind's target
   const targetI = TARGET_INTENSITY[w.kind];
   w.intensity += (targetI - w.intensity) * Math.min(1, dt * 0.4);
 
-  // derived values
   w.visibility = 1 - w.intensity * 0.55;
   w.grip = 1 - w.intensity * 0.3;
   w.darkness = 1 - w.intensity * 0.25;
 
-  // thunderstorm flashes
   if (w.kind === 'thunderstorm' && w.flash <= 0 && rnd() < dt * 0.25) {
     w.flash = 0.18;
   }
@@ -73,22 +81,7 @@ export function stepWeather(w: WeatherState, dt: number, rnd: () => number): boo
   return false;
 }
 
-const TARGET_INTENSITY: Record<WeatherKind, number> = {
-  clear: 0,
-  cloudy: 0.15,
-  rain: 0.55,
-  heavyRain: 0.8,
-  thunderstorm: 1
-};
-
-// extend interface with a private accumulator
-declare module './weather' {
-  interface WeatherState {
-    timerAccum?: number;
-  }
-}
-
-/** Rain particle system sizing per weather state. */
+/** Rain particle count per weather intensity + quality scale. */
 export function rainParticleCount(intensity: number, qualityScale: number): number {
   return Math.floor(intensity * 2400 * qualityScale);
 }
