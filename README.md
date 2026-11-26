@@ -1,8 +1,7 @@
 # Bangladesh Life Simulator
 
 Open-world life simulation of Bangladesh, playable in the browser.
-**Phase 1: Dhanmondi, Dhaka.** Original IP — inspired by open-world driving
-games but built from scratch with original code, geometry, and data pipelines.
+**Playable: Dhanmondi, Dhaka — v0.2.0.** Original IP.
 
 ## Quick start
 
@@ -27,24 +26,29 @@ NOT real map data.
 | W A S D / arrows | Move |
 | Shift | Run |
 | Space | Jump |
-| E | Enter / exit vehicle |
+| E | Enter / exit nearest vehicle |
+| Esc | Pause menu |
 | Mouse drag | Camera look |
 | Touch joystick + RUN/JUMP/E buttons | Mobile (auto-detected) |
 
-## Scripts
+## What's in the game
 
-- `npm run dev` — dev server
-- `npm run build` / `npm start` — production
-- `npm run typecheck` — strict TypeScript check
-- `npm run fetch:world` — bake real OSM world data
+- Third-person character: walk, run, jump, swim (with underwater fog)
+- 5 drivable Bangladeshi vehicles: private car, CNG auto-rickshaw, rickshaw,
+  motorcycle, local bus — each with distinct physics
+- Living world: pedestrians walking sidewalks, traffic driving the road graph
+- Weather: clear, cloudy, rain, heavy rain, thunderstorm — rain particles,
+  slippery roads, reduced visibility, thunder flashes
+- Day/night cycle (~5 min), minimap, pause menu with live graphics settings
+- Quality profiles Low/Medium/High/Ultra (render scale, shadows, fog, NPC counts)
 
 ## Attribution
 
 World data pipeline uses (c) OpenStreetMap contributors data, licensed ODbL 1.0.
 The preview layout is original artistic content, labeled as such in-game.
-All game code and art are original IP.
 
 ## Status
 
-Phase 1 complete. See DEVELOPMENT_STATUS.md for the honest list of what works
-and what does not, and ROADMAP.md for the phase plan (Dhaka -> 64 districts).
+Phases 1-5 complete. See DEVELOPMENT_STATUS.md for the honest list of what
+works and what does not, and ROADMAP.md for what comes next
+(interiors, audio, saves, 64 districts).
