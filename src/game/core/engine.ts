@@ -5,11 +5,14 @@ import { createCollisionWorld } from '../physics/collision';
 import { createPlayer, stepPlayer, BOUND } from '../player/player';
 import { createVehicle, stepVehicle, enterVehicle, exitVehicle } from '../vehicle/vehicle';
 import { buildWorld } from '../world/builder';
-import { loadDhakaTile } from '../world/dhakaTile';
 import { disposeMaterials } from '../world/materials';
 import { disposeProceduralTextures } from '../world/textures';
 import { detectWebGL } from './webglDetect';
 import { createPerfSampler } from './perf';
+import { createStreamingManager } from '../geo/streaming';
+import { travelState } from './travelState';
+import { createStagedLoader } from './stagedLoader';
+import type { DhakaTile } from '../world/dhakaTile';
 
 export interface Engine {
   dispose(): void;
@@ -77,8 +80,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  // tone mapping: ACES gives a filmic response without fake bloom (Task 4:
-  // no excessive filters)
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
 
@@ -145,19 +146,20 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   await frameOrTimeout();
 
   // ---- physics ----
-  const physics = createCollisionWorld();
+  let physics = createCollisionWorld();
   step(50, 'Physics ready');
   await frameOrTimeout();
 
-  // ---- world data + geometry ----
+  // ---- world data + geometry (streaming-managed — Phase G) ----
+  const streaming = createStreamingManager();
   step(60, 'World data…');
-  const tile = await loadDhakaTile();
+  let tile = await streaming.activate('dhaka');
   useGameStore.getState().setHud({
     preview: tile.preview,
     location: tile.name
   });
   step(70, 'World geometry…');
-  const world = buildWorld(scene, physics, tile, prof.treeCount);
+  let world = buildWorld(scene, physics, tile, prof.treeCount);
   step(80, 'Character & vehicle…');
   await frameOrTimeout();
 
@@ -183,12 +185,85 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   await frameOrTimeout();
   step(95, 'Rendering first frame…');
 
+  // ---- staged travel (Phase G) ----
+  const staged = createStagedLoader();
+  let traveling = false;
+
+  async function handleTravel(): Promise<void> {
+    const dest = travelState.travelRequest;
+    if (!dest || traveling) {
+      travelState.travelRequest = null;
+      return;
+    }
+    travelState.travelRequest = null;
+    traveling = true;
+    travelState.traveling = true;
+    travelState.travelProgress = 0.05;
+    useGameStore.getState().setProgress(30, `Loading ${dest}…`);
+
+    const newTile = await streaming.activate(dest);
+
+    const oldWorld = world;
+    const oldPhysics = physics;
+    let newWorld: ReturnType<typeof buildWorld> | null = null;
+    let newPhysics: ReturnType<typeof createCollisionWorld> | null = null;
+
+    try {
+      await staged.run(
+        [
+          { label: 'Disposing old world…', fn: () => {
+            oldWorld.dispose();
+            oldPhysics.dispose();
+          }},
+          { label: 'Building new district…', fn: () => {
+            newPhysics = createCollisionWorld();
+            newWorld = buildWorld(scene, newPhysics!, newTile, prof.treeCount);
+          }},
+          { label: 'Relocating player…', fn: () => {
+            physics = newPhysics!;
+            world = newWorld!;
+            tile = newTile;
+            // exit vehicle, reposition to the tile start
+            if (vehicle.occupied) exitVehicle(vehicle, player);
+            player.pos.set(4, 0, -40);
+            player.vel.set(0, 0, 0);
+            player.group.position.copy(player.pos);
+            useGameStore.getState().setHud({
+              preview: newTile.preview,
+              location: newTile.name,
+              speed: null,
+              prompt: null
+            });
+          }}
+        ],
+        (p, label) => {
+          travelState.travelProgress = p;
+          useGameStore.getState().setProgress(30 + p * 65, label);
+        }
+      );
+    } catch (err) {
+      traveling = false;
+      travelState.traveling = false;
+      useGameStore.getState().setBootError(
+        `Travel failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return;
+    }
+
+    traveling = false;
+    travelState.traveling = false;
+    travelState.travelProgress = 1;
+    travelState.message = `Arrived: ${newTile.name}`;
+    useGameStore.getState().setProgress(100, 'Ready');
+  }
+
   // ---- game loop ----
   let last = performance.now();
   let raf = 0;
   let fpsT = 0;
   let fpsN = 0;
   let hudT = 0;
+  let streamT = 0;
   let dayT = 0.22;
   const camState = { yaw: Math.PI, pitch: -0.18, dist: 6.4 };
   const camPos = new THREE.Vector3(4, 3, -34);
@@ -259,50 +334,66 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
 
     try {
       updateSky(dt);
+
+      // consume travel requests from the UI (Phase G)
+      if (travelState.travelRequest) void handleTravel();
+
+      // streaming upkeep at 1 Hz (neighbor preload, dedup, eviction)
+      streamT += dt;
+      if (streamT > 1 && !traveling) {
+        streamT = 0;
+        streaming.update(player.pos.x, player.pos.z);
+      }
+
       const snap = readInput();
       camState.yaw -= snap.lookDX * 0.0042;
       camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
 
-      if (!vehicle.occupied) {
-        stepPlayer(player, {
-          moveX: snap.moveX,
-          moveZ: snap.moveZ,
-          run: snap.run,
-          jumpQueued: snap.jumpQueued,
-          camYaw: camState.yaw,
-          dt,
-          collision: physics,
-          waterZones: world.waterZones
-        });
-        const near = player.pos.distanceTo(vehicle.pos) < 4.5;
-        if (snap.actionPressed) {
-          if (near) {
-            enterVehicle(vehicle, player);
-            useGameStore.getState().setHud({ prompt: null, speed: 0 });
+      // during travel the sim pauses for the swap steps; keep rendering
+      const simActive = !traveling;
+
+      if (simActive) {
+        if (!vehicle.occupied) {
+          stepPlayer(player, {
+            moveX: snap.moveX,
+            moveZ: snap.moveZ,
+            run: snap.run,
+            jumpQueued: snap.jumpQueued,
+            camYaw: camState.yaw,
+            dt,
+            collision: physics,
+            waterZones: world.waterZones
+          });
+          const near = player.pos.distanceTo(vehicle.pos) < 4.5;
+          if (snap.actionPressed) {
+            if (near) {
+              enterVehicle(vehicle, player);
+              useGameStore.getState().setHud({ prompt: null, speed: 0 });
+            } else {
+              useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
+            }
           } else {
             useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
           }
         } else {
-          useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
-        }
-      } else {
-        stepVehicle(vehicle, {
-          moveX: snap.moveX,
-          moveZ: snap.moveZ,
-          dt,
-          collision: physics,
-          bound: BOUND
-        });
-        if (snap.actionPressed) {
-          exitVehicle(vehicle, player);
-          useGameStore.getState().setHud({ speed: null });
-        }
-        hudT += dt;
-        if (hudT > 0.1) {
-          hudT = 0;
-          useGameStore.getState().setHud({
-            speed: Math.round(Math.abs(vehicle.speed) * 3.6)
+          stepVehicle(vehicle, {
+            moveX: snap.moveX,
+            moveZ: snap.moveZ,
+            dt,
+            collision: physics,
+            bound: BOUND
           });
+          if (snap.actionPressed) {
+            exitVehicle(vehicle, player);
+            useGameStore.getState().setHud({ speed: null });
+          }
+          hudT += dt;
+          if (hudT > 0.1) {
+            hudT = 0;
+            useGameStore.getState().setHud({
+              speed: Math.round(Math.abs(vehicle.speed) * 3.6)
+            });
+          }
         }
       }
 
@@ -315,7 +406,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         useGameStore.getState().setProgress(100, 'Ready');
       }
 
-      // perf sampling (real measurements, 2 Hz)
       const frameMs = performance.now() - frameStart;
       perf.tick(frameMs);
 
@@ -358,6 +448,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       cleanupInput();
       world.dispose();
       physics.dispose();
+      streaming.dispose();
       disposeMaterials();
       disposeProceduralTextures();
       renderer.dispose();
