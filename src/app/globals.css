@@ -22,3 +22,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #07131c; c
 .joy-knob { position: absolute; left: 37px; top: 37px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,.28); pointer-events: none; }
 .tbtns { position: fixed; right: 16px; bottom: 22px; z-index: 20; display: flex; flex-direction: column; }
 .tbtn { width: 62px; height: 62px; border-radius: 50%; background: rgba(255,255,255,.12); border: 2px solid rgba(255,255,255,.25); color: #fff; font-size: 11px; font-weight: 700; margin-top: 10px; touch-action: none; -webkit-tap-highlight-color: transparent; }
+.dev-panel { position: fixed; left: 12px; bottom: 14px; z-index: 30; background: rgba(4, 14, 20, 0.82); border: 1px solid rgba(0, 229, 255, 0.35); border-radius: 10px; padding: 10px 14px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-width: 220px; pointer-events: none; }
+.dev-title { color: #00e5ff; font-weight: 700; letter-spacing: 1px; margin-bottom: 6px; font-size: 10px; }
+.dev-row { display: flex; justify-content: space-between; gap: 16px; line-height: 1.65; }
+.dev-label { opacity: .6; }
+.dev-value { font-variant-numeric: tabular-nums; }
