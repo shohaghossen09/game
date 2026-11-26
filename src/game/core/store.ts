@@ -12,16 +12,22 @@ export interface HudState {
 
 export type Quality = 'low' | 'medium' | 'high' | 'ultra';
 
+/** Honest boot phases — the loading screen shows the true state and never
+ *  claims Ready before the engine confirms a rendered first frame. */
+export type BootPhase = 'probing' | 'init' | 'first-frame' | 'ready' | 'failed';
+
 export interface GameStore {
   progress: number;
   status: string;
   bootError: string | null;
+  bootPhase: BootPhase;
   touch: boolean;
   quality: Quality;
   hud: HudState;
   setProgress: (p: number, status?: string) => void;
   setStatus: (s: string) => void;
   setBootError: (e: string | null) => void;
+  setBootPhase: (p: BootPhase) => void;
   setTouch: (t: boolean) => void;
   setQuality: (q: Quality) => void;
   setHud: (h: Partial<HudState>) => void;
@@ -41,6 +47,7 @@ export const useGameStore = create<GameStore>((set) => ({
   progress: 0,
   status: 'Booting engine…',
   bootError: null,
+  bootPhase: 'init',
   touch: false,
   quality: 'high',
   hud: initialHud,
@@ -50,8 +57,26 @@ export const useGameStore = create<GameStore>((set) => ({
       ...(status ? { status } : {})
     })),
   setStatus: (status) => set({ status }),
-  setBootError: (e) => set({ bootError: e }),
+  setBootError: (e) =>
+    set((s) => ({
+      bootError: e,
+      // a boot error means we are no longer booting — reflect it
+      ...(e ? { bootPhase: 'failed' as BootPhase } : {})
+    })),
+  setBootPhase: (bootPhase) => set({ bootPhase }),
   setTouch: (touch) => set({ touch }),
   setQuality: (quality) => set({ quality }),
-  setHud: (h) => set((s) => ({ hud: { ...s.hud, ...h } }))
+  setHud: (h) => {
+    set((s) => {
+      // shallow-equality guard (audit A10): don't re-render when nothing changed
+      let changed = false;
+      for (const k of Object.keys(h) as (keyof HudState)[]) {
+        if (s.hud[k] !== (h as HudState)[k]) {
+          changed = true;
+          break;
+        }
+      }
+      return changed ? { hud: { ...s.hud, ...h } } : {};
+    });
+  }
 }));
