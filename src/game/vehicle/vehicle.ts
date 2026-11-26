@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import type { CollisionWorld } from '../physics/collision';
-import { resolveCar } from '../physics/collision';
+import type { CollisionWorld, AABB } from '../physics/collision';
 import { VEHICLE_SPECS, type VehicleCategory, type VehicleSpec } from './specs';
 
 export interface Vehicle {
@@ -15,7 +14,7 @@ export interface Vehicle {
   occupied: boolean;
 }
 
-function buildMesh(spec: VehicleSpec): THREE.Group {
+function buildMesh(spec: VehicleSpec): { group: THREE.Group; wheels: THREE.Object3D[] } {
   const group = new THREE.Group();
 
   const body = new THREE.Mesh(
@@ -39,19 +38,19 @@ function buildMesh(spec: VehicleSpec): THREE.Group {
   const wg = new THREE.CylinderGeometry(spec.wheelR, spec.wheelR, 0.24, 12);
   wg.rotateZ(Math.PI / 2);
   const wm = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+  const wheels: THREE.Object3D[] = [];
   const halfTrack = spec.bodyW / 2;
   const halfWheelbase = spec.bodyL / 2 - spec.wheelR;
-  const wheels = [-halfTrack, halfTrack].flatMap((x) =>
-    [halfWheelbase, -halfWheelbase].map((z) => {
+  for (const x of [-halfTrack, halfTrack]) {
+    for (const z of [halfWheelbase, -halfWheelbase]) {
       const w = new THREE.Mesh(wg, wm);
       w.position.set(x, spec.wheelR, z);
       w.castShadow = true;
       group.add(w);
-      return w;
-    })
-  );
-  void wheels;
-  return group;
+      wheels.push(w);
+    }
+  }
+  return { group, wheels };
 }
 
 export function createVehicle(
@@ -62,7 +61,7 @@ export function createVehicle(
   yaw = 0
 ): Vehicle {
   const spec = VEHICLE_SPECS[category];
-  const group = buildMesh(spec);
+  const { group, wheels } = buildMesh(spec);
   scene.add(group);
   const v: Vehicle = {
     group,
@@ -72,7 +71,7 @@ export function createVehicle(
     yaw,
     speed: 0,
     steer: 0,
-    wheels: group.children.filter((c) => c instanceof THREE.Mesh && c.geometry.type === 'CylinderGeometry') as THREE.Object3D[],
+    wheels,
     occupied: false
   };
   group.position.copy(v.pos);
@@ -85,20 +84,22 @@ export interface VehicleStepArgs {
   dt: number;
   collision: CollisionWorld;
   bound: number;
+  grip?: number; // 1 = dry, lower = slippery (weather)
 }
 
 export function stepVehicle(v: Vehicle, args: VehicleStepArgs): void {
-  const { moveX, moveZ, dt, collision, bound } = args;
+  const { moveX, moveZ, dt, collision, bound, grip = 1 } = args;
   const spec = v.spec;
 
   const throttle = moveZ;
-  v.speed += throttle * (throttle > 0 ? spec.accel : spec.brakeOrReverseAccel) * dt;
+  v.speed += throttle * (throttle > 0 ? spec.accel : spec.brakeOrReverseAccel) * dt * grip;
   v.speed *= 1 - Math.min(0.9, dt * spec.drag);
-  if (Math.abs(throttle) < 0.05) v.speed *= 1 - dt * 1.1;
+  if (Math.abs(throttle) < 0.05) v.speed *= 1 - dt * 1.1 * grip;
   v.speed = Math.max(spec.maxReverse, Math.min(spec.maxSpeed, v.speed));
 
+  // slippery roads: steering has less bite
   v.steer += (moveX * 0.55 - v.steer) * (1 - Math.pow(0.001, dt));
-  v.yaw -= v.steer * v.speed * dt * (spec.steerRate * 2);
+  v.yaw -= v.steer * v.speed * dt * (spec.steerRate * 2) * (0.7 + 0.3 * grip);
 
   v.pos.x += Math.sin(v.yaw) * v.speed * dt;
   v.pos.z += Math.cos(v.yaw) * v.speed * dt;
@@ -119,10 +120,9 @@ export function stepVehicle(v: Vehicle, args: VehicleStepArgs): void {
   for (const w of v.wheels) w.rotation.x -= v.speed * dt * (2.4 / spec.wheelR * 0.3);
 }
 
-/** Same pushout as resolveCar but with per-vehicle collide half-width. */
 function resolveCarScaled(
   pos: { x: number; y: number; z: number },
-  boxes: import('../physics/collision').AABB[],
+  boxes: AABB[],
   half: number
 ): number {
   let loss = 1;
@@ -155,7 +155,6 @@ export function exitVehicle(v: Vehicle, p: { pos: THREE.Vector3; vel: THREE.Vect
   p.group.visible = true;
 }
 
-/** Nearest unoccupied vehicle within range of a position. */
 export function nearestVehicle(
   vehicles: Vehicle[],
   pos: THREE.Vector3,
