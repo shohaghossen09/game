@@ -83,8 +83,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
 
-  const perf = createPerfSampler(renderer, cap.webgl2 ? 'webgl2' : 'webgl');
-
   // ---- context loss handling (audit A2) ----
   let contextLost = false;
   let firstFrameConfirmed = false;
@@ -152,6 +150,12 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
 
   // ---- world data + geometry (streaming-managed — Phase G) ----
   const streaming = createStreamingManager();
+  // perf sampler lives here so tile stats flow into the dev panel
+  const perf = createPerfSampler(
+    renderer,
+    cap.webgl2 ? 'webgl2' : 'webgl',
+    streaming
+  );
   step(60, 'World data…');
   let tile = await streaming.activate('dhaka');
   useGameStore.getState().setHud({
