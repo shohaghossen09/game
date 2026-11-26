@@ -14,8 +14,10 @@ import { loadDhakaTile } from '../world/dhakaTile';
 import { disposeMaterials } from '../world/materials';
 import { minimapState, resetMinimap } from './minimap';
 import { evalWater, applyBuoyancy } from '../water/water';
-import { createWeather, stepWeather, type WeatherState } from '../weather/weather';
+import { createWeather, stepWeather } from '../weather/weather';
 import { RainSystem } from '../weather/rain';
+import { createNpcSystem } from '../npcs/pedestrians';
+import { createTrafficSystem } from '../traffic/traffic';
 
 export interface Engine {
   dispose(): void;
@@ -27,13 +29,15 @@ interface QualityProfile {
   fogFar: number;
   treeCount: number;
   pixelRatioCap: number;
+  npcCount: number;
+  trafficCount: number;
 }
 
 const QUALITY: Record<Quality, QualityProfile> = {
-  low: { renderScale: 0.5, shadowMapSize: 512, fogFar: 240, treeCount: 40, pixelRatioCap: 1.5 },
-  medium: { renderScale: 0.75, shadowMapSize: 1024, fogFar: 320, treeCount: 70, pixelRatioCap: 1.5 },
-  high: { renderScale: 1.0, shadowMapSize: 2048, fogFar: 400, treeCount: 100, pixelRatioCap: 2 },
-  ultra: { renderScale: 1.0, shadowMapSize: 4096, fogFar: 500, treeCount: 140, pixelRatioCap: 2 }
+  low: { renderScale: 0.5, shadowMapSize: 512, fogFar: 240, treeCount: 40, pixelRatioCap: 1.5, npcCount: 20, trafficCount: 12 },
+  medium: { renderScale: 0.75, shadowMapSize: 1024, fogFar: 320, treeCount: 70, pixelRatioCap: 1.5, npcCount: 40, trafficCount: 20 },
+  high: { renderScale: 1.0, shadowMapSize: 2048, fogFar: 400, treeCount: 100, pixelRatioCap: 2, npcCount: 60, trafficCount: 28 },
+  ultra: { renderScale: 1.0, shadowMapSize: 4096, fogFar: 500, treeCount: 140, pixelRatioCap: 2, npcCount: 90, trafficCount: 40 }
 };
 
 const DAY_LENGTH = 300;
@@ -108,7 +112,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const world = buildWorld(scene, physics, tile, prof.treeCount);
   const props = buildProps(tile);
   scene.add(props.group);
-  store.setProgress(85, 'Character & vehicles…');
+  store.setProgress(85, 'Characters & traffic…');
   await frame();
 
   resetMinimap();
@@ -122,9 +126,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   );
   player.group.position.copy(player.pos);
 
-  // weather + rain
   const weather = createWeather();
   const rain = new RainSystem(scene, 2400);
+  const npcs = createNpcSystem(scene, tile, prof.npcCount);
+  const traffic = createTrafficSystem(scene, tile, prof.trafficCount);
 
   const cleanupInput = initInput();
 
@@ -194,15 +199,12 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       Math.min(0.5, day * 0.5),
       Math.max(0.42, Math.min(0.66, 0.5 + elev * 0.12))
     );
-    // sky: night -> rain-gray -> day, all lerped
     const sky = skyNight.clone().lerp(skyDay, day);
     sky.lerp(skyRain, weather.intensity * 0.7);
-    // thunder flash: brief white boost
     if (weather.flash > 0) sky.lerp(new THREE.Color(0xdfe9f4), 0.7);
     scene.background = sky;
     hemi.intensity = (0.12 + day * 0.8) * weather.darkness;
 
-    // fog: base range x visibility, underwater overrides
     const underwater =
       !activeVehicle && evalWater(player.pos, world.waterZones).state === 'underwater';
     if (underwater) {
@@ -287,6 +289,12 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       }
     }
 
+    // NPCs + traffic update around the player
+    const centerX = activeVehicle ? activeVehicle.pos.x : player.pos.x;
+    const centerZ = activeVehicle ? activeVehicle.pos.z : player.pos.z;
+    npcs.update(dt, centerX, centerZ);
+    traffic.update(dt, centerX, centerZ);
+
     // minimap feed
     minimapState.px = player.pos.x;
     minimapState.pz = player.pos.z;
@@ -312,7 +320,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     camera.position.copy(camPos);
     camera.lookAt(camTarget.x, th + 0.5, camTarget.z);
 
-    // rain follows camera
     rain.update(dt, weather.intensity, camPos.x, camPos.z);
 
     renderer.render(scene, camera);
@@ -351,6 +358,8 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       offPause();
       cleanupInput();
       rain.dispose();
+      npcs.dispose();
+      traffic.dispose();
       props.dispose();
       world.dispose();
       physics.dispose();
