@@ -13,7 +13,7 @@ export interface BuildingSpec {
   x: number; z: number;
   w: number; d: number;
   h: number;
-  style: number; // index into wall materials
+  style: number;
 }
 
 export interface WaterArea {
@@ -48,8 +48,9 @@ export async function loadDhakaTile(): Promise<DhakaTile> {
 }
 
 /** Deterministic Dhanmondi-INSPIRED preview layout. NOT real map data.
- *  The HUD shows a warning while this is active. */
-function previewTile(): DhakaTile {
+ *  The HUD shows a warning while this is active. Exported for the
+ *  streaming manager's unbaked-district fallback. */
+export function previewTile(): DhakaTile {
   const roads: RoadSegment[] = [];
   const buildings: BuildingSpec[] = [];
 
