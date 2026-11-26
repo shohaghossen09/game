@@ -1,14 +1,15 @@
 {
   "name": "bangladesh-life-simulator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Open-world life simulation of Bangladesh, playable in the browser. Dhanmondi, Dhaka — vehicles, weather, NPCs, traffic. Original IP.",
+  "description": "Open-world life simulation of Bangladesh, playable in the browser. 64-district travel, vehicles, weather, NPCs, traffic, interiors. Original IP.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "fetch:world": "node scripts/fetch-dhaka.mjs"
+    "fetch:world": "node scripts/fetch-dhaka.mjs",
+    "fetch:district": "node scripts/fetch-district.mjs"
   },
   "dependencies": {
     "next": "14.2.5",
