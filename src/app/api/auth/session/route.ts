@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { authStore, tokenHashOf, sessionCookieName } from '@/game/backend/store';
+import { stores, tokenHashOf, sessionCookieName } from '@/game/backend/store';
 
 export const runtime = 'nodejs';
 
@@ -8,11 +8,12 @@ export async function GET(req: Request) {
   if (!token) {
     return NextResponse.json({ authenticated: false });
   }
-  const session = await authStore.getSession(tokenHashOf(token));
+  const { auth } = await stores();
+  const session = await auth.getSession(tokenHashOf(token));
   if (!session) {
     return NextResponse.json({ authenticated: false });
   }
-  const user = await authStore.getUserById(session.userId);
+  const user = await auth.getUserById(session.userId);
   if (!user) {
     return NextResponse.json({ authenticated: false });
   }
