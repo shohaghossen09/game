@@ -13,7 +13,7 @@ export interface BuildingSpec {
   x: number; z: number;
   w: number; d: number;
   h: number;
-  style: number; // index into wall materials
+  style: number;
 }
 
 export interface WaterArea {
@@ -47,13 +47,11 @@ export async function loadDhakaTile(): Promise<DhakaTile> {
   return previewTile();
 }
 
-/** Deterministic Dhanmondi-INSPIRED preview layout. NOT real map data.
- *  The HUD shows a warning while this is active. */
-function previewTile(): DhakaTile {
+/** Deterministic Dhanmondi-INSPIRED preview layout. NOT real map data. */
+export function previewTile(): DhakaTile {
   const roads: RoadSegment[] = [];
   const buildings: BuildingSpec[] = [];
 
-  // main avenue (N-S) + cross roads
   roads.push({ x1: 0, z1: -280, x2: 0, z2: 280, width: 14, kind: 'major' });
   for (let z = -140; z <= 140; z += 70) {
     roads.push({ x1: -240, z1: z, x2: 240, z2: z, width: 11, kind: 'local' });
@@ -62,13 +60,11 @@ function previewTile(): DhakaTile {
     roads.push({ x1: x, z1: -210, x2: x, z2: 210, width: 11, kind: 'local' });
   }
 
-  // building rows along the avenue
   for (let z = -250; z <= 250; z += 34) {
     const h = 12 + (((z + 250) / 34) % 3) * 4;
     buildings.push({ x: -23, z, w: 12, d: 12, h, style: 0 });
     buildings.push({ x: 23, z, w: 12, d: 12, h, style: 1 });
   }
-  // building rows along cross roads
   for (let x = -240; x <= 240; x += 40) {
     const h = 14 + (((x + 240) / 40) % 3) * 4;
     buildings.push({ x, z: -27, w: 14, d: 12, h, style: 2 });
