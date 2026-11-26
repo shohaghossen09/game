@@ -286,7 +286,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     travelState.travelProgress = 0.6;
     travelState.currentDistrict = dest;
 
-    // dispose the CURRENT systems (not the initial ones)
     props.dispose();
     world.dispose();
     lights.dispose();
@@ -310,7 +309,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     minimapState.buildings = newTile.buildings.map((b) => ({ x: b.x, z: b.z, w: b.w, d: b.d }));
     minimapState.water = newTile.water.map((w) => ({ x: w.cx, z: w.cz, r: w.r }));
 
-    // reset player to the tile start; exit any vehicle
     player.pos.set(4, 0, -40);
     player.vel.set(0, 0, 0);
     player.yaw = Math.PI;
@@ -413,7 +411,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
 
     audio.setRain(weather.intensity);
 
-    traffic.update(dt, player.pos.x, player.pos.z);
+    // traffic obeys lights via look-ahead
+    traffic.update(dt, player.pos.x, player.pos.z, (x, z, axis) =>
+      lights.shouldStop(x, z, axis)
+    );
     npcs.update(dt, player.pos.x, player.pos.z);
 
     minimapState.px = player.pos.x;
