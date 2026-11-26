@@ -1,4 +1,4 @@
-/** Dev performance stats — Phase F (Task 9).
+/** Dev performance stats — Phase F/G (Task 9).
  *  Reads renderer.info (draw calls, triangles, points, textures) and
  *  performance.memory where supported. Updated at 2 Hz into a mutable
  *  object read by the dev panel component — outside Zustand so stats
@@ -18,6 +18,10 @@ export interface PerfStats {
   jsHeapUsedMb: number | null; // null when performance.memory unsupported
   jsHeapTotalMb: number | null;
   renderer: 'webgl2' | 'webgl';
+  // streaming (Phase G)
+  tileActive: string;
+  tileCached: number;
+  tileInFlight: number;
 }
 
 export const perfStats: PerfStats = {
@@ -31,12 +35,20 @@ export const perfStats: PerfStats = {
   programs: 0,
   jsHeapUsedMb: null,
   jsHeapTotalMb: null,
-  renderer: 'webgl2'
+  renderer: 'webgl2',
+  tileActive: 'dhaka',
+  tileCached: 0,
+  tileInFlight: 0
 };
+
+export interface TileStatsSource {
+  stats(): { cached: number; inFlight: number; active: string };
+}
 
 export function createPerfSampler(
   renderer: THREE.WebGLRenderer,
-  rendererKind: 'webgl2' | 'webgl'
+  rendererKind: 'webgl2' | 'webgl',
+  tiles?: TileStatsSource
 ): {
   /** call once per frame after render */
   tick(frameMs: number): void;
@@ -59,6 +71,13 @@ export function createPerfSampler(
       perfStats.textures = info.memory.textures;
       perfStats.programs = info.programs?.length ?? 0;
       perfStats.renderer = rendererKind;
+
+      if (tiles) {
+        const s = tiles.stats();
+        perfStats.tileActive = s.active;
+        perfStats.tileCached = s.cached;
+        perfStats.tileInFlight = s.inFlight;
+      }
 
       const mem = (
         performance as Performance & {
