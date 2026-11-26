@@ -36,7 +36,7 @@ export function detectWebGL(canvas: HTMLCanvasElement): WebGLCapability {
       (/iPhone|iPad|iPod/.test(navigator.userAgent) ||
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
     return {
-      kind: 'blocked',
+      kind: 'unavailable',
       webgl2: false,
       message: isIOS
         ? 'WebGL is disabled or blocked on this device. Enable it in your browser settings (Safari: Settings > Safari > Advanced > Experimental Features).'
@@ -51,7 +51,6 @@ export function detectWebGL(canvas: HTMLCanvasElement): WebGLCapability {
   try {
     maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
     if (typeof maxTextureSize !== 'number' || maxTextureSize <= 0) {
-      // Driver answered with garbage — treat as unusable context
       return {
         kind: 'blocked',
         webgl2: false,
@@ -63,7 +62,6 @@ export function detectWebGL(canvas: HTMLCanvasElement): WebGLCapability {
     return {
       kind: 'blocked',
       webgl2: false,
-      game: undefined,
       message:
         'WebGL context was created but the driver failed to respond. Your GPU may be blocklisted or the browser is in a software-fallback state.'
     };
