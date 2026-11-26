@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { CollisionWorld } from '../physics/collision';
 import { Materials } from './materials';
+import { buildBuildings } from './buildings';
 import type { DhakaTile } from './dhakaTile';
 
 export interface BuiltWorld {
@@ -17,76 +18,86 @@ export function buildWorld(
 ): BuiltWorld {
   const group = new THREE.Group();
   scene.add(group);
-  const disposers: (() => void)[] = [];
   const waterZones: { x: number; z: number; r: number }[] = [];
 
-  const addBox = (
-    w: number, h: number, d: number,
-    mat: THREE.Material, x: number, y: number, z: number,
-    collide = true
-  ) => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    m.receiveShadow = true;
-    group.add(m);
-    if (collide) physics.addStaticBox(x, y, z, w, h, d);
-    return m;
-  };
+  // ---------- ground ----------
+  const g = new THREE.Mesh(new THREE.PlaneGeometry(760, 760), Materials.grass);
+  g.rotation.x = -Math.PI / 2;
+  g.receiveShadow = true;
+  group.add(g);
 
-  // ground plane
-  {
-    const g = new THREE.Mesh(new THREE.PlaneGeometry(760, 760), Materials.grass);
-    g.rotation.x = -Math.PI / 2;
-    g.receiveShadow = true;
-    group.add(g);
-  }
-
-  // roads + sidewalks
+  // ---------- roads + sidewalks (with curbs) ----------
   for (const r of tile.roads) {
     const len = Math.hypot(r.x2 - r.x1, r.z2 - r.z1);
     const cx = (r.x1 + r.x2) / 2;
     const cz = (r.z1 + r.z2) / 2;
     const horizontal = Math.abs(r.x2 - r.x1) > Math.abs(r.z2 - r.z1);
-    addBox(
-      horizontal ? len : r.width, 0.04,
-      horizontal ? r.width : len,
-      Materials.road, cx, 0.02, cz, false
+
+    // asphalt
+    const road = new THREE.Mesh(
+      new THREE.BoxGeometry(horizontal ? len : r.width, 0.04, horizontal ? r.width : len),
+      Materials.road
     );
-    if (horizontal) {
-      addBox(len, 0.22, 1.6, Materials.sidewalk, cx, 0.11, cz - r.width / 2 - 0.8, false);
-      addBox(len, 0.22, 1.6, Materials.sidewalk, cx, 0.11, cz + r.width / 2 + 0.8, false);
-    } else {
-      addBox(1.6, 0.22, len, Materials.sidewalk, cx - r.width / 2 - 0.8, 0.11, cz, false);
-      addBox(1.6, 0.22, len, Materials.sidewalk, cx + r.width / 2 + 0.8, 0.11, cz, false);
-    }
-  }
+    road.position.set(cx, 0.02, cz);
+    road.receiveShadow = true;
+    group.add(road);
 
-  // lane markings on the main avenue
-  for (let z = -260; z < 260; z += 9) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.02, 4.4), Materials.lane);
-    m.position.set(0, 0.05, z);
-    group.add(m);
-  }
-
-  // buildings
-  const wallMats = [Materials.wall1, Materials.wall2, Materials.wall3, Materials.wall4];
-  for (const b of tile.buildings) {
-    addBox(b.w, b.h, b.d, wallMats[b.style % 4], b.x, b.h / 2, b.z, true);
-    addBox(b.w * 0.55, 1.1, b.d * 0.55, Materials.roof, b.x, b.h + 0.55, b.z, false);
-    // window strips
-    const strips = Math.max(2, Math.floor(b.h / 3.2));
-    for (let i = 1; i < strips; i++) {
-      const s = new THREE.Mesh(
-        new THREE.BoxGeometry(b.w * 1.01, 1.15, b.d * 1.01),
-        Materials.window
+    // sidewalks + curbs on both sides
+    const sides = horizontal
+      ? [[0, cz - r.width / 2 - 0.9], [0, cz + r.width / 2 + 0.9]]
+      : [[cx - r.width / 2 - 0.9, 0], [cx + r.width / 2 + 0.9, 0]];
+    for (const [sx, sz] of sides) {
+      const walk = new THREE.Mesh(
+        horizontal
+          ? new THREE.BoxGeometry(len, 0.22, 1.8)
+          : new THREE.BoxGeometry(1.8, 0.22, len),
+        Materials.sidewalk
       );
-      s.position.set(b.x, (b.h / strips) * i + 0.6, b.z);
-      group.add(s);
+      walk.position.set(sx || cx, 0.11, sz || cz);
+      walk.receiveShadow = true;
+      group.add(walk);
+      // curb face (small dark strip at the road edge)
+      const curb = new THREE.Mesh(
+        horizontal
+          ? new THREE.BoxGeometry(len, 0.24, 0.14)
+          : new THREE.BoxGeometry(0.14, 0.24, len),
+        Materials.trim
+      );
+      const toward = horizontal ? (sz > cz ? -0.95 : 0.95) : (sx > cx ? -0.95 : 0.95);
+      curb.position.set(
+        horizontal ? cx : sx + toward,
+        0.12,
+        horizontal ? sz + toward : cz
+      );
+      group.add(curb);
     }
   }
 
-  // water
+  // ---------- lane markings (merged into ONE mesh — audit A11) ----------
+  {
+    const laneGeos: THREE.BufferGeometry[] = [];
+    const laneMat = Materials.lane;
+    for (let z = -260; z < 260; z += 9) {
+      const seg = new THREE.BoxGeometry(0.4, 0.02, 4.4);
+      seg.translate(0, 0.05, z);
+      laneGeos.push(seg);
+    }
+    // mergeGeometries equivalent: manual merge via BufferGeometryUtils is an
+    // addon in three 0.160; without adding the addon import we merge manually.
+    const merged = mergeGeometriesManually(laneGeos);
+    const laneMesh = new THREE.Mesh(merged, laneMat);
+    group.add(laneMesh);
+  }
+
+  // ---------- buildings (modular, instanced elements — Phase D) ----------
+  const buildings = buildBuildings(tile);
+  group.add(buildings.group);
+  // collision for facade bodies (the instanced windows/trim are cosmetic)
+  for (const b of tile.buildings) {
+    physics.addStaticBox(b.x, b.h / 2, b.z, b.w, b.h, b.d);
+  }
+
+  // ---------- water ----------
   for (const w of tile.water) {
     const mesh = new THREE.Mesh(new THREE.CircleGeometry(w.r, 40), Materials.water);
     mesh.rotation.x = -Math.PI / 2;
@@ -95,7 +106,7 @@ export function buildWorld(
     waterZones.push({ x: w.cx, z: w.cz, r: w.r });
   }
 
-  // instanced trees (2 draw calls for all vegetation)
+  // ---------- instanced trees ----------
   {
     const trunkGeo = new THREE.CylinderGeometry(0.28, 0.42, 3.4, 7);
     const leafGeo = new THREE.SphereGeometry(2.1, 8, 7);
@@ -122,13 +133,11 @@ export function buildWorld(
       i++;
     }
     group.add(trunks, leaves);
-    disposers.push(() => {
-      trunks.dispose();
-      leaves.dispose();
-    });
+    const td = [trunks, leaves];
+    world_disposers.push(() => td.forEach((d) => d.dispose()));
   }
 
-  // street lamps along the main avenue (1 draw call)
+  // ---------- street lamps ----------
   {
     const poleGeo = new THREE.CylinderGeometry(0.09, 0.09, 7, 6);
     const count = 36;
@@ -142,7 +151,7 @@ export function buildWorld(
       lamps.setMatrixAt(i, mx);
     }
     group.add(lamps);
-    disposers.push(() => lamps.dispose());
+    world_disposers.push(() => lamps.dispose());
   }
 
   return {
@@ -150,10 +159,56 @@ export function buildWorld(
     waterZones,
     dispose() {
       scene.remove(group);
+      buildings.dispose();
+      world_disposers.forEach((d) => d());
+      world_disposers.length = 0;
       group.traverse((o) => {
         if (o instanceof THREE.Mesh) o.geometry.dispose();
       });
-      disposers.forEach((d) => d());
     }
   };
+}
+
+// local dispose registry (kept outside the returned object so closures stay small)
+const world_disposers: (() => void)[] = [];
+
+/** Minimal geometry merge for the lane strips: concatenates position and
+ *  index arrays of translated clones into one BufferGeometry. Equivalent to
+ *  the mergeGeometries addon, kept local to avoid the addon import. */
+function mergeGeometriesManually(geos: THREE.BoxGeometry[]): THREE.BufferGeometry {
+  const out = new THREE.BufferGeometry();
+  let vertCount = 0;
+  let idxCount = 0;
+  for (const geo of geos) {
+    vertCount += geo.attributes.position.count;
+    idxCount += geo.index ? geo.index.count : 0;
+  }
+  const positions = new Float32Array(vertCount * 3);
+  const normals = new Float32Array(vertCount * 3);
+  const uvs = new Float32Array(vertCount * 2);
+  const indices = new Uint32Array(idxCount);
+  let vOff = 0;
+  let iOff = 0;
+  for (const geo of geos) {
+    const p = geo.attributes.position as THREE.BufferAttribute;
+    const n = geo.attributes.normal as THREE.BufferAttribute;
+    const uv = geo.attributes.uv as THREE.BufferAttribute;
+    positions.set(p.array as Float32Array, vOff * 3);
+    normals.set(n.array as Float32Array, vOff * 3);
+    uvs.set(uv.array as Float32Array, vOff * 2);
+    if (geo.index) {
+      const idx = geo.index.array as ArrayLike<number>;
+      for (let i = 0; i < idx.length; i++) {
+        indices[iOff + i] = idx[i] + vOff;
+      }
+      iOff += idx.length;
+    }
+    vOff += p.count;
+    geo.dispose();
+  }
+  out.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  out.setIndex(new THREE.BufferAttribute(indices, 1));
+  return out;
 }
