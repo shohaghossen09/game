@@ -19,6 +19,8 @@ export function buildWorld(
   const group = new THREE.Group();
   scene.add(group);
   const waterZones: { x: number; z: number; r: number }[] = [];
+  // dispose registry scoped to THIS build (fixes shared-state bug on rebuilds)
+  const disposers: (() => void)[] = [];
 
   // ---------- ground ----------
   const g = new THREE.Mesh(new THREE.PlaneGeometry(760, 760), Materials.grass);
@@ -33,7 +35,6 @@ export function buildWorld(
     const cz = (r.z1 + r.z2) / 2;
     const horizontal = Math.abs(r.x2 - r.x1) > Math.abs(r.z2 - r.z1);
 
-    // asphalt
     const road = new THREE.Mesh(
       new THREE.BoxGeometry(horizontal ? len : r.width, 0.04, horizontal ? r.width : len),
       Materials.road
@@ -42,32 +43,32 @@ export function buildWorld(
     road.receiveShadow = true;
     group.add(road);
 
-    // sidewalks + curbs on both sides
     const sides = horizontal
-      ? [[0, cz - r.width / 2 - 0.9], [0, cz + r.width / 2 + 0.9]]
-      : [[cx - r.width / 2 - 0.9, 0], [cx + r.width / 2 + 0.9, 0]];
-    for (const [sx, sz] of sides) {
+      ? [{ x: cx, z: cz - r.width / 2 - 0.9 }, { x: cx, z: cz + r.width / 2 + 0.9 }]
+      : [{ x: cx - r.width / 2 - 0.9, z: cz }, { x: cx + r.width / 2 + 0.9, z: cz }];
+    for (const s of sides) {
       const walk = new THREE.Mesh(
         horizontal
           ? new THREE.BoxGeometry(len, 0.22, 1.8)
           : new THREE.BoxGeometry(1.8, 0.22, len),
         Materials.sidewalk
       );
-      walk.position.set(sx || cx, 0.11, sz || cz);
+      walk.position.set(s.x, 0.11, s.z);
       walk.receiveShadow = true;
       group.add(walk);
-      // curb face (small dark strip at the road edge)
       const curb = new THREE.Mesh(
         horizontal
           ? new THREE.BoxGeometry(len, 0.24, 0.14)
           : new THREE.BoxGeometry(0.14, 0.24, len),
         Materials.trim
       );
-      const toward = horizontal ? (sz > cz ? -0.95 : 0.95) : (sx > cx ? -0.95 : 0.95);
+      const toward = horizontal
+        ? (s.z > cz ? -0.95 : 0.95)
+        : (s.x > cx ? -0.95 : 0.95);
       curb.position.set(
-        horizontal ? cx : sx + toward,
+        horizontal ? cx : s.x + toward,
         0.12,
-        horizontal ? sz + toward : cz
+        horizontal ? s.z + toward : cz
       );
       group.add(curb);
     }
@@ -75,24 +76,20 @@ export function buildWorld(
 
   // ---------- lane markings (merged into ONE mesh — audit A11) ----------
   {
-    const laneGeos: THREE.BufferGeometry[] = [];
-    const laneMat = Materials.lane;
+    const laneGeos: THREE.BoxGeometry[] = [];
     for (let z = -260; z < 260; z += 9) {
       const seg = new THREE.BoxGeometry(0.4, 0.02, 4.4);
       seg.translate(0, 0.05, z);
       laneGeos.push(seg);
     }
-    // mergeGeometries equivalent: manual merge via BufferGeometryUtils is an
-    // addon in three 0.160; without adding the addon import we merge manually.
     const merged = mergeGeometriesManually(laneGeos);
-    const laneMesh = new THREE.Mesh(merged, laneMat);
+    const laneMesh = new THREE.Mesh(merged, Materials.lane);
     group.add(laneMesh);
   }
 
   // ---------- buildings (modular, instanced elements — Phase D) ----------
   const buildings = buildBuildings(tile);
   group.add(buildings.group);
-  // collision for facade bodies (the instanced windows/trim are cosmetic)
   for (const b of tile.buildings) {
     physics.addStaticBox(b.x, b.h / 2, b.z, b.w, b.h, b.d);
   }
@@ -133,8 +130,12 @@ export function buildWorld(
       i++;
     }
     group.add(trunks, leaves);
-    const td = [trunks, leaves];
-    world_disposers.push(() => td.forEach((d) => d.dispose()));
+    disposers.push(() => {
+      trunkGeo.dispose();
+      leafGeo.dispose();
+      trunks.dispose();
+      leaves.dispose();
+    });
   }
 
   // ---------- street lamps ----------
@@ -151,7 +152,10 @@ export function buildWorld(
       lamps.setMatrixAt(i, mx);
     }
     group.add(lamps);
-    world_disposers.push(() => lamps.dispose());
+    disposers.push(() => {
+      poleGeo.dispose();
+      lamps.dispose();
+    });
   }
 
   return {
@@ -160,8 +164,8 @@ export function buildWorld(
     dispose() {
       scene.remove(group);
       buildings.dispose();
-      world_disposers.forEach((d) => d());
-      world_disposers.length = 0;
+      disposers.forEach((d) => d());
+      disposers.length = 0;
       group.traverse((o) => {
         if (o instanceof THREE.Mesh) o.geometry.dispose();
       });
@@ -169,12 +173,9 @@ export function buildWorld(
   };
 }
 
-// local dispose registry (kept outside the returned object so closures stay small)
-const world_disposers: (() => void)[] = [];
-
 /** Minimal geometry merge for the lane strips: concatenates position and
- *  index arrays of translated clones into one BufferGeometry. Equivalent to
- *  the mergeGeometries addon, kept local to avoid the addon import. */
+ *  index arrays of translated clones into one BufferGeometry. Local
+ *  equivalent of the mergeGeometries addon, kept here to avoid the import. */
 function mergeGeometriesManually(geos: THREE.BoxGeometry[]): THREE.BufferGeometry {
   const out = new THREE.BufferGeometry();
   let vertCount = 0;
