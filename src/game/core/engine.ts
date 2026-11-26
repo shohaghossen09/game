@@ -1,12 +1,14 @@
 import * as THREE from 'three';
-import { useGameStore, type Quality } from './store';
+import { useGameStore, type Quality, onQualityChange, onPauseChange } from './store';
 import { initInput, readInput } from './input';
 import { createCollisionWorld } from '../physics/collision';
 import { createPlayer, stepPlayer, BOUND } from '../player/player';
 import { createVehicle, stepVehicle, enterVehicle, exitVehicle } from '../vehicle/vehicle';
 import { buildWorld } from '../world/builder';
+import { buildProps } from '../world/props';
 import { loadDhakaTile } from '../world/dhakaTile';
 import { disposeMaterials } from '../world/materials';
+import { minimapState, resetMinimap } from './minimap';
 
 export interface Engine {
   dispose(): void;
@@ -27,14 +29,13 @@ const QUALITY: Record<Quality, QualityProfile> = {
   ultra: { renderScale: 1.0, shadowMapSize: 4096, fogFar: 500, treeCount: 140, pixelRatioCap: 2 }
 };
 
-const DAY_LENGTH = 300; // seconds for a full day
+const DAY_LENGTH = 300;
 
 export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const store = useGameStore.getState();
   store.setTouch(matchMedia('(pointer: coarse)').matches);
   store.setProgress(10, 'Starting renderer…');
 
-  // renderer
   let renderer: THREE.WebGLRenderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -44,20 +45,22 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         (err instanceof Error ? err.message : '')
     );
   }
-  const prof = QUALITY[useGameStore.getState().quality] ?? QUALITY.high;
-  renderer.setSize(innerWidth, innerHeight, false);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, prof.pixelRatioCap));
+  let quality = useGameStore.getState().quality;
+  let prof = QUALITY[quality] ?? QUALITY.high;
+  const applyResolution = () => {
+    renderer.setPixelRatio(Math.min(devicePixelRatio, prof.pixelRatioCap));
+    renderer.setSize(innerWidth, innerHeight, false);
+  };
+  applyResolution();
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   store.setProgress(20, 'Renderer ready');
   await frame();
 
-  // camera
   const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 1200);
   store.setProgress(30, 'Camera ready');
 
-  // scene / lights
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x9fb8c8);
   scene.fog = new THREE.Fog(0x9fb8c8, prof.fogFar / 3, prof.fogFar);
@@ -76,12 +79,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   store.setProgress(40, 'Scene ready');
   await frame();
 
-  // physics
   const physics = createCollisionWorld();
   store.setProgress(55, 'Physics ready');
   await frame();
 
-  // world data + geometry
   store.setProgress(65, 'World data…');
   const tile = await loadDhakaTile();
   useGameStore.getState().setHud({
@@ -90,23 +91,57 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   });
   store.setProgress(75, 'World geometry…');
   const world = buildWorld(scene, physics, tile, prof.treeCount);
+  const props = buildProps(tile);
+  scene.add(props.group);
   store.setProgress(85, 'Character & vehicle…');
   await frame();
 
-  // player + vehicle
+  // minimap feed (static data once)
+  resetMinimap();
+  minimapState.roads = tile.roads.map((r) => ({ x1: r.x1, z1: r.z1, x2: r.x2, z2: r.z2, width: r.width }));
+  minimapState.buildings = tile.buildings.map((b) => ({ x: b.x, z: b.z, w: b.w, d: b.d }));
+  minimapState.water = tile.water.map((w) => ({ x: w.cx, z: w.cz, r: w.r }));
+
   const player = createPlayer(scene);
   const vehicle = createVehicle(scene, physics);
   player.group.position.copy(player.pos);
 
-  // input
   const cleanupInput = initInput();
 
-  // compile shaders
   store.setProgress(92, 'Compiling shaders…');
   renderer.compile(scene, camera);
   await frame();
   store.setProgress(100, 'Ready');
   await frame();
+
+  // ---- live quality switching ----
+  const offQuality = onQualityChange((q) => {
+    quality = q;
+    prof = QUALITY[q] ?? QUALITY.high;
+    sun.shadow.mapSize.set(prof.shadowMapSize, prof.shadowMapSize);
+    if (sun.shadow.map) {
+      sun.shadow.map.dispose();
+      sun.shadow.map = null; // Three.js rebuilds at new size
+    }
+    if (scene.fog) {
+      scene.fog.near = prof.fogFar / 3;
+      scene.fog.far = prof.fogFar;
+    }
+    applyResolution();
+  });
+
+  // ---- pause support ----
+  let paused = false;
+  const offPause = onPauseChange((p) => {
+    paused = p;
+  });
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.code === 'Escape') {
+      useGameStore.getState().setPaused(!useGameStore.getState().paused);
+    }
+  };
+  window.addEventListener('keydown', onKey);
 
   // ---- game loop ----
   let disposed = false;
@@ -115,7 +150,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   let fpsT = 0;
   let fpsN = 0;
   let hudT = 0;
-  let dayT = 0.22; // start ~07:30
+  let dayT = 0.22;
   const camState = { yaw: Math.PI, pitch: -0.18, dist: 6.4 };
   const camPos = new THREE.Vector3(4, 3, -34);
   const skyDay = new THREE.Color(0x9fb8c8);
@@ -176,8 +211,12 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   function loop(now: number): void {
     if (disposed) return;
     raf = requestAnimationFrame(loop);
-    const dt = Math.min((now - last) / 1000, 0.05);
+    const dt = paused ? 0 : Math.min((now - last) / 1000, 0.05);
     last = now;
+    if (paused) {
+      renderer.render(scene, camera); // keep drawing behind the menu
+      return;
+    }
 
     updateSky(dt);
     const snap = readInput();
@@ -200,12 +239,9 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         if (near) {
           enterVehicle(vehicle, player);
           useGameStore.getState().setHud({ prompt: null, speed: 0 });
-        } else {
-          useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
         }
-      } else {
-        useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
       }
+      useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
     } else {
       stepVehicle(vehicle, {
         moveX: snap.moveX,
@@ -218,7 +254,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         exitVehicle(vehicle, player);
         useGameStore.getState().setHud({ speed: null });
       }
-      // throttle HUD updates
       hudT += dt;
       if (hudT > 0.1) {
         hudT = 0;
@@ -227,6 +262,14 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         });
       }
     }
+
+    // minimap feed (cheap: plain field writes)
+    minimapState.px = player.pos.x;
+    minimapState.pz = player.pos.z;
+    minimapState.yaw = camState.yaw;
+    minimapState.driving = vehicle.occupied;
+    minimapState.vehicleX = vehicle.pos.x;
+    minimapState.vehicleZ = vehicle.pos.z;
 
     updateCamera(dt);
     renderer.render(scene, camera);
@@ -260,7 +303,11 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       disposed = true;
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('keydown', onKey);
+      offQuality();
+      offPause();
       cleanupInput();
+      props.dispose();
       world.dispose();
       physics.dispose();
       disposeMaterials();
