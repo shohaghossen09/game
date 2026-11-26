@@ -3,12 +3,17 @@ import { useGameStore, type Quality, onQualityChange, onPauseChange } from './st
 import { initInput, readInput } from './input';
 import { createCollisionWorld } from '../physics/collision';
 import { createPlayer, stepPlayer, BOUND } from '../player/player';
-import { createVehicle, stepVehicle, enterVehicle, exitVehicle } from '../vehicle/vehicle';
+import {
+  createVehicle, stepVehicle, enterVehicle, exitVehicle, nearestVehicle,
+  type Vehicle
+} from '../vehicle/vehicle';
+import type { VehicleCategory } from '../vehicle/specs';
 import { buildWorld } from '../world/builder';
 import { buildProps } from '../world/props';
 import { loadDhakaTile } from '../world/dhakaTile';
 import { disposeMaterials } from '../world/materials';
 import { minimapState, resetMinimap } from './minimap';
+import { evalWater, applyBuoyancy } from '../water/water';
 
 export interface Engine {
   dispose(): void;
@@ -30,6 +35,15 @@ const QUALITY: Record<Quality, QualityProfile> = {
 };
 
 const DAY_LENGTH = 300;
+const ENTER_RANGE = 4.5;
+
+const FLEET: Array<{ category: VehicleCategory; x: number; z: number; yaw: number }> = [
+  { category: 'sedan', x: 10, z: -46, yaw: 0 },
+  { category: 'cng', x: 14, z: -38, yaw: 0.3 },
+  { category: 'rickshaw', x: -14, z: -38, yaw: -0.3 },
+  { category: 'motorcycle', x: 18, z: -46, yaw: 0 },
+  { category: 'bus', x: 28, z: -60, yaw: Math.PI / 2 }
+];
 
 export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const store = useGameStore.getState();
@@ -45,8 +59,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         (err instanceof Error ? err.message : '')
     );
   }
-  let quality = useGameStore.getState().quality;
-  let prof = QUALITY[quality] ?? QUALITY.high;
+  const prof = QUALITY[useGameStore.getState().quality] ?? QUALITY.high;
   const applyResolution = () => {
     renderer.setPixelRatio(Math.min(devicePixelRatio, prof.pixelRatioCap));
     renderer.setSize(innerWidth, innerHeight, false);
@@ -93,7 +106,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const world = buildWorld(scene, physics, tile, prof.treeCount);
   const props = buildProps(tile);
   scene.add(props.group);
-  store.setProgress(85, 'Character & vehicle…');
+  store.setProgress(85, 'Character & vehicles…');
   await frame();
 
   // minimap feed (static data once)
@@ -103,7 +116,9 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   minimapState.water = tile.water.map((w) => ({ x: w.cx, z: w.cz, r: w.r }));
 
   const player = createPlayer(scene);
-  const vehicle = createVehicle(scene, physics);
+  const fleet: Vehicle[] = FLEET.map((f) =>
+    createVehicle(scene, f.category, f.x, f.z, f.yaw)
+  );
   player.group.position.copy(player.pos);
 
   const cleanupInput = initInput();
@@ -114,23 +129,22 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   store.setProgress(100, 'Ready');
   await frame();
 
-  // ---- live quality switching ----
   const offQuality = onQualityChange((q) => {
-    quality = q;
-    prof = QUALITY[q] ?? QUALITY.high;
-    sun.shadow.mapSize.set(prof.shadowMapSize, prof.shadowMapSize);
+    const np = QUALITY[q] ?? QUALITY.high;
+    sun.shadow.mapSize.set(np.shadowMapSize, np.shadowMapSize);
     if (sun.shadow.map) {
       sun.shadow.map.dispose();
-      sun.shadow.map = null; // Three.js rebuilds at new size
+      sun.shadow.map = null;
     }
     if (scene.fog) {
-      scene.fog.near = prof.fogFar / 3;
-      scene.fog.far = prof.fogFar;
+      scene.fog.near = np.fogFar / 3;
+      scene.fog.far = np.fogFar;
     }
+    prof.renderScale = np.renderScale;
+    prof.pixelRatioCap = np.pixelRatioCap;
     applyResolution();
   });
 
-  // ---- pause support ----
   let paused = false;
   const offPause = onPauseChange((p) => {
     paused = p;
@@ -143,7 +157,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   };
   window.addEventListener('keydown', onKey);
 
-  // ---- game loop ----
   let disposed = false;
   let last = performance.now();
   let raf = 0;
@@ -155,8 +168,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const camPos = new THREE.Vector3(4, 3, -34);
   const skyDay = new THREE.Color(0x9fb8c8);
   const skyNight = new THREE.Color(0x0a1424);
+  const underwaterFog = new THREE.Fog(0x1a5a7a, 0.1, 12);
   const dir = new THREE.Vector3();
   const want = new THREE.Vector3();
+  let activeVehicle: Vehicle | null = null;
 
   function updateSky(dt: number): void {
     dayT = (dayT + dt / DAY_LENGTH) % 1;
@@ -176,7 +191,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     );
     const sky = skyNight.clone().lerp(skyDay, day);
     scene.background = sky;
-    if (scene.fog) scene.fog.color.copy(sky);
     hemi.intensity = 0.12 + day * 0.8;
   }
 
@@ -190,31 +204,13 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     });
   }
 
-  function updateCamera(dt: number): void {
-    const target = vehicle.occupied ? vehicle.pos : player.pos;
-    const th = vehicle.occupied ? vehicle.pos.y + 1.6 : player.pos.y + 1.7;
-    const tyaw = vehicle.occupied ? vehicle.yaw + Math.PI : camState.yaw;
-    const d = vehicle.occupied
-      ? camState.dist + 4 + Math.abs(vehicle.speed) * 0.12
-      : camState.dist;
-    dir.set(
-      Math.sin(tyaw) * Math.cos(camState.pitch),
-      Math.sin(-camState.pitch),
-      Math.cos(tyaw) * Math.cos(camState.pitch)
-    );
-    want.set(target.x - dir.x * d, th - dir.y * d + 1.4, target.z - dir.z * d);
-    camPos.lerp(want, 1 - Math.pow(0.0001, dt));
-    camera.position.copy(camPos);
-    camera.lookAt(target.x, th + 0.5, target.z);
-  }
-
   function loop(now: number): void {
     if (disposed) return;
     raf = requestAnimationFrame(loop);
     const dt = paused ? 0 : Math.min((now - last) / 1000, 0.05);
     last = now;
     if (paused) {
-      renderer.render(scene, camera); // keep drawing behind the menu
+      renderer.render(scene, camera);
       return;
     }
 
@@ -223,7 +219,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     camState.yaw -= snap.lookDX * 0.0042;
     camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
 
-    if (!vehicle.occupied) {
+    if (!activeVehicle) {
       stepPlayer(player, {
         moveX: snap.moveX,
         moveZ: snap.moveZ,
@@ -234,16 +230,32 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         collision: physics,
         waterZones: world.waterZones
       });
-      const near = player.pos.distanceTo(vehicle.pos) < 4.5;
-      if (snap.actionPressed) {
-        if (near) {
-          enterVehicle(vehicle, player);
-          useGameStore.getState().setHud({ prompt: null, speed: 0 });
-        }
+
+      // water buoyancy on foot
+      const water = evalWater(player.pos, world.waterZones);
+      applyBuoyancy(player.pos, player.vel, water.state, dt);
+      // underwater fog tint
+      if (water.state === 'underwater') {
+        scene.fog = underwaterFog;
+      } else {
+        scene.fog = new THREE.Fog(
+          (scene.background as THREE.Color).getHex(),
+          (QUALITY[useGameStore.getState().quality] ?? QUALITY.high).fogFar / 3,
+          (QUALITY[useGameStore.getState().quality] ?? QUALITY.high).fogFar
+        );
       }
-      useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
+
+      const near = nearestVehicle(fleet, player.pos, ENTER_RANGE);
+      useGameStore.getState().setHud({
+        prompt: near ? `Press E — ${near.spec.label}` : null
+      });
+      if (snap.actionPressed && near) {
+        enterVehicle(near, player);
+        activeVehicle = near;
+        useGameStore.getState().setHud({ prompt: null, speed: 0 });
+      }
     } else {
-      stepVehicle(vehicle, {
+      stepVehicle(activeVehicle, {
         moveX: snap.moveX,
         moveZ: snap.moveZ,
         dt,
@@ -251,27 +263,44 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         bound: BOUND
       });
       if (snap.actionPressed) {
-        exitVehicle(vehicle, player);
+        exitVehicle(activeVehicle, player);
         useGameStore.getState().setHud({ speed: null });
+        activeVehicle = null;
       }
       hudT += dt;
       if (hudT > 0.1) {
         hudT = 0;
         useGameStore.getState().setHud({
-          speed: Math.round(Math.abs(vehicle.speed) * 3.6)
+          speed: Math.round(Math.abs(activeVehicle.speed) * 3.6)
         });
       }
     }
 
-    // minimap feed (cheap: plain field writes)
+    // minimap feed
     minimapState.px = player.pos.x;
     minimapState.pz = player.pos.z;
     minimapState.yaw = camState.yaw;
-    minimapState.driving = vehicle.occupied;
-    minimapState.vehicleX = vehicle.pos.x;
-    minimapState.vehicleZ = vehicle.pos.z;
+    minimapState.driving = activeVehicle !== null;
+    minimapState.vehicleX = activeVehicle ? activeVehicle.pos.x : fleet[0].pos.x;
+    minimapState.vehicleZ = activeVehicle ? activeVehicle.pos.z : fleet[0].pos.z;
 
-    updateCamera(dt);
+    // camera
+    const camTarget = activeVehicle ? activeVehicle.pos : player.pos;
+    const th = activeVehicle ? activeVehicle.pos.y + 1.6 : player.pos.y + 1.7;
+    const tyaw = activeVehicle ? activeVehicle.yaw + Math.PI : camState.yaw;
+    const d = activeVehicle
+      ? camState.dist + 3 + activeVehicle.spec.bodyL * 0.5 + Math.abs(activeVehicle.speed) * 0.1
+      : camState.dist;
+    dir.set(
+      Math.sin(tyaw) * Math.cos(camState.pitch),
+      Math.sin(-camState.pitch),
+      Math.cos(tyaw) * Math.cos(camState.pitch)
+    );
+    want.set(camTarget.x - dir.x * d, th - dir.y * d + 1.4, camTarget.z - dir.z * d);
+    camPos.lerp(want, 1 - Math.pow(0.0001, dt));
+    camera.position.copy(camPos);
+    camera.lookAt(camTarget.x, th + 0.5, camTarget.z);
+
     renderer.render(scene, camera);
 
     fpsT += dt;
