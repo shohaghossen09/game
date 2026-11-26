@@ -10,6 +10,8 @@ export const travelState = {
   travelRequest: null as string | null,
   /** set by save UI; engine consumes and clears */
   saveRequest: null as { slot: number; kind: 'save' | 'load' } | null,
+  /** set by the engine after a cloud save/load — UI displays it */
+  saveResult: null as string | null,
   /** progress feedback for travel (0..1, 1 = done) */
   travelProgress: 0,
   travelTarget: null as string | null
