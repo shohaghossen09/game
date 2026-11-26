@@ -1,38 +1,45 @@
-# Development Status — v0.1.0 (Phase 1)
+# Development Status — v0.2.0 (audit-upgrade branch, Phases A+B)
 
-## Implemented and committed
-- Next.js 14 + strict TypeScript scaffold
-- Single-canvas imperative engine loop (no R3F)
-- Collision: capsule vs building AABBs, spatial-grid queries, least-penetration pushout
-- Third-person character: articulated limbs, walk/run/jump, camera-relative movement
-- Follow camera: exponential damping, mouse-drag orbit, vehicle pull-back
-- Drivable car: enter/exit (E), acceleration, brake, reverse, speed-scaled steering,
-  building collision with speed loss, wheel rotation, km/h HUD
-- Swimming/buoyancy in water zones
-- Day/night cycle (~5 min), dynamic sun/sky/fog, clock readout
-- Loading screen with real boot-step progress (no fake bar)
-- HUD: location, clock, day/night, FPS, speed, interaction prompt, PREVIEW warning
-- Mobile: virtual joystick, RUN/JUMP/E buttons, auto-shown on coarse pointers
-- Quality profiles Low/Medium/High/Ultra (render scale, shadows, fog, trees)
-- PREVIEW world layout fallback — deterministic, clearly labeled
-- Real-data baker script: `npm run fetch:world` (Overpass -> tile JSON)
-- Docs: README, ARCHITECTURE, ROADMAP, DEVELOPMENT_STATUS, GAME_SYSTEMS,
-  WORLD_DATA, PERFORMANCE, TESTING
+## Phase A — Audit (COMPLETE)
+Full source read of the deployed `phase-1` tree; findings in AUDIT_REPORT.md.
+Headline confirmed issues:
+- A1 (CRITICAL): loading screen declared Ready before first render
+- A2 (CRITICAL): WebGL context loss unhandled — silent 0-FPS death
+- A3 (HIGH): boot yields via rAF only — stalls forever in throttled tabs
+- A4 (HIGH): no WebGL capability probe — misleading failure messages
+- A6 (MEDIUM): no baked world tile on production — PREVIEW layout runs
+- A10 (LOW): per-frame HUD re-renders without equality guard
+- Cleared: Rapier is not installed (prompt assumed it); physics grid is
+  sound; strict TS was on (the deploy-breaking bug was a missing CI gate,
+  not a config issue)
 
-## Not yet implemented (honest)
-- Real OSM data requires one run of `npm run fetch:world` (network needed)
-- No building interiors, NPCs, traffic, weather, audio, saves, minimap, pause menu
-- WebGPU not enabled (WebGL2 only in Phase 1)
-- One vehicle type (sedan); category physics (CNG, rickshaw, bus...) is Phase 3
-- Quality profile switch UI not wired (store field exists; menu is Phase 2)
+## Phase B — Startup hardening (COMPLETE)
+- `src/game/core/webglDetect.ts` (NEW): capability probe webgl2→webgl,
+  driver-alive check via parameter query, categorized human messages
+- `src/game/core/engine.ts`: first-frame gate — Ready only after a render
+  call completes; 20s boot watchdog with real error category; rAF-or-50ms
+  -timeout boot yields (background-tab safe); context-lost/restored
+  handling (sim pauses, HUD shows recovery, resumes on restore); render
+  try/catch with categorization; FPS counts confirmed renders only
+- `src/game/core/store.ts`: honest boot phases, setHud equality guard
+- `src/components/game/GameClient.tsx`: Retry button on boot failure
+- `src/app/globals.css`: retry/error-box styles
 
-## Known issues
-- Sidewalk boxes do not collide with the car (ramp simplification, revisit Phase 2)
-- Car body uses an AABB approximation, not oriented collision (Rapier swap fixes)
-- Camera can clip buildings on fast 180-degree turns (rare)
+## Not yet done (honest)
+- `.github/workflows/typecheck.yml` commit BLOCKED: the connected GitHub
+  token lacks the `workflow` scope, so commits touching `.github/workflows`
+  are rejected. **Action needed from you:** either grant the workflow
+  scope to the Ashna connector token, or add the file manually with the
+  content from the workflow plan in AUDIT_REPORT.md Phase B plan.
+- Runtime verification of the live deployment (browser-control extension
+  not paired this session; Vercel connector not connected). Deploy
+  `audit-upgrade` and check: boot completes on production, FPS counter
+  moves, background-tab boot no longer stalls.
+- Phase C+ (rendering/physics polish, Dhanmondi environment, PBR,
+  optimization, dev panel, streaming, testing) — not started yet.
 
-## Next tasks (Phase 2)
-1. Bake real Dhanmondi tile and verify road widths vs OSM highway tags
-2. Rapier 3D swap behind the CollisionWorld interface
-3. Building style rules by road class; street props
-4. Minimap component
+## Deploy note
+The `audit-upgrade` branch includes the earlier rAF-promise fix and the
+next 14.2.35 security bump already on `phase-1`. To test the startup
+fixes on production: point the Vercel project at `audit-upgrade` (or
+merge it into `phase-1` and redeploy).
