@@ -84,8 +84,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const prof = QUALITY[useGameStore.getState().quality] ?? QUALITY.high;
   const adaptive = createAdaptiveResolution();
   const applyResolution = () => {
-    const ratio = Math.min(devicePixelRatio, prof.pixelRatioCap) * adaptive.scale;
-    renderer.setPixelRatio(ratio);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, prof.pixelRatioCap) * adaptive.scale);
     renderer.setSize(innerWidth, innerHeight, false);
   };
   applyResolution();
@@ -333,7 +332,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     try {
       await staged.run(
         [
-          { label: `Unloading ${travelState.travelTarget ?? 'old tile'}…`, fn: () => {} },
+          { label: 'Unloading old tile…', fn: () => {} },
           { label: 'Disposing old systems…', fn: () => {
             old.props.dispose();
             old.world.dispose();
@@ -544,7 +543,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   let lastAdaptiveScale = adaptive.scale;
 
   function frame(): Promise<void> {
-    return new Promise((r) => requestAnimationFrame(r));
+    return new Promise((r) => requestAnimationFrame(() => r()));
   }
 
   function onResize(): void {
