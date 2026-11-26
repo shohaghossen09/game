@@ -14,6 +14,8 @@ import { loadDhakaTile } from '../world/dhakaTile';
 import { disposeMaterials } from '../world/materials';
 import { minimapState, resetMinimap } from './minimap';
 import { evalWater, applyBuoyancy } from '../water/water';
+import { createWeather, stepWeather, type WeatherState } from '../weather/weather';
+import { RainSystem } from '../weather/rain';
 
 export interface Engine {
   dispose(): void;
@@ -109,7 +111,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   store.setProgress(85, 'Character & vehicles…');
   await frame();
 
-  // minimap feed (static data once)
   resetMinimap();
   minimapState.roads = tile.roads.map((r) => ({ x1: r.x1, z1: r.z1, x2: r.x2, z2: r.z2, width: r.width }));
   minimapState.buildings = tile.buildings.map((b) => ({ x: b.x, z: b.z, w: b.w, d: b.d }));
@@ -120,6 +121,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     createVehicle(scene, f.category, f.x, f.z, f.yaw)
   );
   player.group.position.copy(player.pos);
+
+  // weather + rain
+  const weather = createWeather();
+  const rain = new RainSystem(scene, 2400);
 
   const cleanupInput = initInput();
 
@@ -136,11 +141,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       sun.shadow.map.dispose();
       sun.shadow.map = null;
     }
-    if (scene.fog) {
-      scene.fog.near = np.fogFar / 3;
-      scene.fog.far = np.fogFar;
-    }
-    prof.renderScale = np.renderScale;
+    prof.fogFar = np.fogFar;
     prof.pixelRatioCap = np.pixelRatioCap;
     applyResolution();
   });
@@ -168,12 +169,16 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const camPos = new THREE.Vector3(4, 3, -34);
   const skyDay = new THREE.Color(0x9fb8c8);
   const skyNight = new THREE.Color(0x0a1424);
-  const underwaterFog = new THREE.Fog(0x1a5a7a, 0.1, 12);
+  const skyRain = new THREE.Color(0x6a7a88);
+  const underwaterFogColor = new THREE.Color(0x1a5a7a);
   const dir = new THREE.Vector3();
   const want = new THREE.Vector3();
   let activeVehicle: Vehicle | null = null;
+  let qualityFogFar = prof.fogFar;
+  const rnd = () => Math.random();
 
-  function updateSky(dt: number): void {
+  function stepWeatherAndSky(dt: number): void {
+    stepWeather(weather, dt, rnd);
     dayT = (dayT + dt / DAY_LENGTH) % 1;
     const elev = Math.sin((dayT - 0.25) * Math.PI * 2);
     const sunAngle = (dayT - 0.25) * Math.PI * 2;
@@ -183,15 +188,32 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       Math.sin(sunAngle) * 60 + 40
     );
     const day = Math.max(0, Math.min(1, elev * 1.6 + 0.35));
-    sun.intensity = day * 2.1;
+    sun.intensity = day * 2.1 * weather.darkness;
     sun.color.setHSL(
       0.09,
       Math.min(0.5, day * 0.5),
       Math.max(0.42, Math.min(0.66, 0.5 + elev * 0.12))
     );
+    // sky: night -> rain-gray -> day, all lerped
     const sky = skyNight.clone().lerp(skyDay, day);
+    sky.lerp(skyRain, weather.intensity * 0.7);
+    // thunder flash: brief white boost
+    if (weather.flash > 0) sky.lerp(new THREE.Color(0xdfe9f4), 0.7);
     scene.background = sky;
-    hemi.intensity = 0.12 + day * 0.8;
+    hemi.intensity = (0.12 + day * 0.8) * weather.darkness;
+
+    // fog: base range x visibility, underwater overrides
+    const underwater =
+      !activeVehicle && evalWater(player.pos, world.waterZones).state === 'underwater';
+    if (underwater) {
+      scene.fog!.color.copy(underwaterFogColor);
+      scene.fog!.near = 0.1;
+      scene.fog!.far = 12;
+    } else {
+      scene.fog!.color.copy(sky);
+      scene.fog!.near = (qualityFogFar / 3) * weather.visibility;
+      scene.fog!.far = qualityFogFar * weather.visibility;
+    }
   }
 
   function pushClock(): void {
@@ -214,7 +236,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       return;
     }
 
-    updateSky(dt);
+    stepWeatherAndSky(dt);
     const snap = readInput();
     camState.yaw -= snap.lookDX * 0.0042;
     camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
@@ -230,20 +252,8 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         collision: physics,
         waterZones: world.waterZones
       });
-
-      // water buoyancy on foot
       const water = evalWater(player.pos, world.waterZones);
       applyBuoyancy(player.pos, player.vel, water.state, dt);
-      // underwater fog tint
-      if (water.state === 'underwater') {
-        scene.fog = underwaterFog;
-      } else {
-        scene.fog = new THREE.Fog(
-          (scene.background as THREE.Color).getHex(),
-          (QUALITY[useGameStore.getState().quality] ?? QUALITY.high).fogFar / 3,
-          (QUALITY[useGameStore.getState().quality] ?? QUALITY.high).fogFar
-        );
-      }
 
       const near = nearestVehicle(fleet, player.pos, ENTER_RANGE);
       useGameStore.getState().setHud({
@@ -260,7 +270,8 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         moveZ: snap.moveZ,
         dt,
         collision: physics,
-        bound: BOUND
+        bound: BOUND,
+        grip: weather.grip
       });
       if (snap.actionPressed) {
         exitVehicle(activeVehicle, player);
@@ -301,6 +312,9 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     camera.position.copy(camPos);
     camera.lookAt(camTarget.x, th + 0.5, camTarget.z);
 
+    // rain follows camera
+    rain.update(dt, weather.intensity, camPos.x, camPos.z);
+
     renderer.render(scene, camera);
 
     fpsT += dt;
@@ -336,6 +350,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       offQuality();
       offPause();
       cleanupInput();
+      rain.dispose();
       props.dispose();
       world.dispose();
       physics.dispose();
