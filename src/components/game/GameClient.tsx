@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import Hud from './Hud';
 import TouchControls from './TouchControls';
+import DevPanel from './DevPanel';
 import { useGameStore } from '@/game/core/store';
 
 export default function GameClient() {
@@ -38,6 +39,7 @@ export default function GameClient() {
       <canvas ref={canvasRef} className="game-canvas" />
       <Hud />
       <TouchControls />
+      <DevPanel />
       <LoadingScreen />
     </>
   );
