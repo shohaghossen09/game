@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import Hud from './Hud';
 import TouchControls from './TouchControls';
 import DevPanel from './DevPanel';
+import TravelPanel from './TravelPanel';
 import { useGameStore } from '@/game/core/store';
 
 export default function GameClient() {
@@ -40,6 +41,7 @@ export default function GameClient() {
       <Hud />
       <TouchControls />
       <DevPanel />
+      <TravelPanel />
       <LoadingScreen />
     </>
   );
