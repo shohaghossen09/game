@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { useGameStore, type Quality } from './store';
+import { useGameStore, type Quality, onQualityChange } from './store';
 import { initInput, readInput } from './input';
 import { createCollisionWorld } from '../physics/collision';
 import { createPlayer, stepPlayer, BOUND } from '../player/player';
@@ -9,6 +9,8 @@ import { disposeMaterials } from '../world/materials';
 import { disposeProceduralTextures } from '../world/textures';
 import { detectWebGL } from './webglDetect';
 import { createPerfSampler } from './perf';
+import { createAdaptiveResolution } from './adaptive';
+import { createBuildingLod } from '../world/lod';
 import { createStreamingManager } from '../geo/streaming';
 import { travelState } from './travelState';
 import { createStagedLoader } from './stagedLoader';
@@ -36,8 +38,6 @@ const QUALITY: Record<Quality, QualityProfile> = {
 const DAY_LENGTH = 300;
 const BOOT_TIMEOUT_MS = 20_000;
 
-/** rAF with a timeout fallback: rAF is throttled/paused in background
- *  tabs, which stalled the boot on production forever (audit A3). */
 function frameOrTimeout(): Promise<void> {
   return new Promise<void>((resolve) => {
     let done = false;
@@ -57,7 +57,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   store.setTouch(matchMedia('(pointer: coarse)').matches);
   store.setProgress(5, 'Checking graphics capability…');
 
-  // ---- WebGL capability probe (audit A4) ----
+  // ---- WebGL capability probe ----
   const cap = detectWebGL(canvas);
   if (cap.kind !== 'ok') {
     throw new Error(cap.message);
@@ -75,15 +75,21 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     );
   }
   const prof = QUALITY[useGameStore.getState().quality] ?? QUALITY.high;
-  renderer.setSize(innerWidth, innerHeight, false);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, prof.pixelRatioCap));
+  const adaptive = createAdaptiveResolution();
+
+  const applyResolution = () => {
+    const ratio = Math.min(devicePixelRatio, prof.pixelRatioCap) * adaptive.scale;
+    renderer.setPixelRatio(ratio);
+    renderer.setSize(innerWidth, innerHeight, false);
+  };
+  applyResolution();
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
 
-  // ---- context loss handling (audit A2) ----
+  // ---- context loss handling ----
   let contextLost = false;
   let firstFrameConfirmed = false;
   const onContextLost = (e: Event) => {
@@ -100,7 +106,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   canvas.addEventListener('webglcontextlost', onContextLost);
   canvas.addEventListener('webglcontextrestored', onContextRestored);
 
-  // ---- boot watchdog (audit A3) ----
+  // ---- boot watchdog ----
   const watchdog = setTimeout(() => {
     if (!firstFrameConfirmed) {
       useGameStore.getState().setBootError(
@@ -148,14 +154,9 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   step(50, 'Physics ready');
   await frameOrTimeout();
 
-  // ---- world data + geometry (streaming-managed — Phase G) ----
+  // ---- world (streaming-managed) ----
   const streaming = createStreamingManager();
-  // perf sampler lives here so tile stats flow into the dev panel
-  const perf = createPerfSampler(
-    renderer,
-    cap.webgl2 ? 'webgl2' : 'webgl',
-    streaming
-  );
+  const perf = createPerfSampler(renderer, cap.webgl2 ? 'webgl2' : 'webgl', streaming);
   step(60, 'World data…');
   let tile = await streaming.activate('dhaka');
   useGameStore.getState().setHud({
@@ -164,6 +165,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   });
   step(70, 'World geometry…');
   let world = buildWorld(scene, physics, tile, prof.treeCount);
+  let buildingLod = createBuildingLod(world.buildingDetailGroup, world.buildingCoarseGroup);
   step(80, 'Character & vehicle…');
   await frameOrTimeout();
 
@@ -189,7 +191,25 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   await frameOrTimeout();
   step(95, 'Rendering first frame…');
 
-  // ---- staged travel (Phase G) ----
+  // ---- live quality switching (Phase H) ----
+  const offQuality = onQualityChange((q) => {
+    const np = QUALITY[q] ?? QUALITY.high;
+    sun.shadow.mapSize.set(np.shadowMapSize, np.shadowMapSize);
+    if (sun.shadow.map) {
+      sun.shadow.map.dispose();
+      (sun.shadow as { map: null }).map = null;
+    }
+    prof.fogFar = np.fogFar;
+    prof.pixelRatioCap = np.pixelRatioCap;
+    if (scene.fog) {
+      scene.fog.near = np.fogFar / 3;
+      scene.fog.far = np.fogFar;
+    }
+    adaptive.reset();
+    applyResolution();
+  });
+
+  // ---- staged travel ----
   const staged = createStagedLoader();
   let traveling = false;
 
@@ -226,8 +246,8 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
           { label: 'Relocating player…', fn: () => {
             physics = newPhysics!;
             world = newWorld!;
+            buildingLod = createBuildingLod(world.buildingDetailGroup, world.buildingCoarseGroup);
             tile = newTile;
-            // exit vehicle, reposition to the tile start
             if (vehicle.occupied) exitVehicle(vehicle, player);
             player.pos.set(4, 0, -40);
             player.vel.set(0, 0, 0);
@@ -275,6 +295,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const skyNight = new THREE.Color(0x0a1424);
   const dir = new THREE.Vector3();
   const want = new THREE.Vector3();
+  let lastAdaptiveScale = adaptive.scale;
 
   function updateSky(dt: number): void {
     dayT = (dayT + dt / DAY_LENGTH) % 1;
@@ -339,10 +360,8 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     try {
       updateSky(dt);
 
-      // consume travel requests from the UI (Phase G)
       if (travelState.travelRequest) void handleTravel();
 
-      // streaming upkeep at 1 Hz (neighbor preload, dedup, eviction)
       streamT += dt;
       if (streamT > 1 && !traveling) {
         streamT = 0;
@@ -353,7 +372,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       camState.yaw -= snap.lookDX * 0.0042;
       camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
 
-      // during travel the sim pauses for the swap steps; keep rendering
       const simActive = !traveling;
 
       if (simActive) {
@@ -401,6 +419,9 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         }
       }
 
+      // building LOD follows the camera (Phase H)
+      buildingLod.update(camPos.x, camPos.z);
+
       updateCamera(dt);
       renderer.render(scene, camera);
 
@@ -413,10 +434,17 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       const frameMs = performance.now() - frameStart;
       perf.tick(frameMs);
 
+      // adaptive resolution reacts to the measured fps (Phase H)
       fpsT += dt;
       fpsN++;
       if (fpsT >= 0.5) {
-        useGameStore.getState().setHud({ fps: Math.round(fpsN / fpsT) });
+        const fps = Math.round(fpsN / fpsT);
+        useGameStore.getState().setHud({ fps });
+        adaptive.reportFps(fps);
+        if (adaptive.scale !== lastAdaptiveScale) {
+          lastAdaptiveScale = adaptive.scale;
+          applyResolution();
+        }
         fpsT = 0;
         fpsN = 0;
         pushClock();
@@ -449,6 +477,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       canvas.removeEventListener('webglcontextlost', onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
       window.removeEventListener('resize', onResize);
+      offQuality();
       cleanupInput();
       world.dispose();
       physics.dispose();
