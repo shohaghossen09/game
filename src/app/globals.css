@@ -27,3 +27,18 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #07131c; c
 .dev-row { display: flex; justify-content: space-between; gap: 16px; line-height: 1.65; }
 .dev-label { opacity: .6; }
 .dev-value { font-variant-numeric: tabular-nums; }
+/* Travel panel — Phase G */
+.travel-fab { position: fixed; top: 34px; right: 12px; z-index: 25; padding: 8px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,.3); background: rgba(4,14,20,.7); color: #fff; font-size: 12px; font-weight: 700; letter-spacing: 1px; cursor: pointer; }
+.travel-fab:hover { background: rgba(10,30,40,.85); }
+.travel-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(4, 12, 18, 0.78); display: flex; align-items: center; justify-content: center; backdrop-filter: blur(3px); }
+.travel-card { background: #0d1a24; border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: 22px 26px; width: min(560px, 92vw); max-height: 86vh; overflow: auto; box-shadow: 0 8px 40px rgba(0,0,0,.6); }
+.travel-card h2 { font-size: 20px; letter-spacing: 2px; margin-bottom: 6px; }
+.travel-hint { font-size: 11px; color: #8fa89e; margin-bottom: 14px; line-height: 1.5; }
+.district-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+.district-btn { padding: 9px 4px; font-size: 11px; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.18); border-radius: 6px; cursor: pointer; }
+.district-btn:hover { background: rgba(255,255,255,.18); border-color: #00c853; }
+.travel-progress { font-size: 12px; color: #ffd54f; margin-bottom: 10px; }
+.travel-done { font-size: 12px; color: #00e676; margin-bottom: 10px; }
+.travel-close { display: block; width: 100%; padding: 10px; margin-top: 4px; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.18); border-radius: 8px; font-size: 13px; cursor: pointer; }
+.travel-close:hover { background: rgba(255,255,255,.16); }
+@media (max-width: 640px) { .district-grid { grid-template-columns: repeat(3, 1fr); } .travel-fab { top: 64px; } }
