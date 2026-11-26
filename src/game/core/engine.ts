@@ -18,6 +18,12 @@ import { createWeather, stepWeather } from '../weather/weather';
 import { RainSystem } from '../weather/rain';
 import { createNpcSystem } from '../npcs/pedestrians';
 import { createTrafficSystem } from '../traffic/traffic';
+import { createTrafficLights } from '../traffic/trafficLights';
+import { buildInteriors } from '../interiors/interiors';
+import { createAudioSystem, type AudioSystem } from '../audio/audio';
+import { saveGame, loadGame } from '../saves/saves';
+import { createStreamingManager } from '../geography/streaming';
+import { travelState } from './travelState';
 
 export interface Engine {
   dispose(): void;
@@ -42,6 +48,7 @@ const QUALITY: Record<Quality, QualityProfile> = {
 
 const DAY_LENGTH = 300;
 const ENTER_RANGE = 4.5;
+const DOOR_RANGE = 2.6;
 
 const FLEET: Array<{ category: VehicleCategory; x: number; z: number; yaw: number }> = [
   { category: 'sedan', x: 10, z: -46, yaw: 0 },
@@ -50,6 +57,11 @@ const FLEET: Array<{ category: VehicleCategory; x: number; z: number; yaw: numbe
   { category: 'motorcycle', x: 18, z: -46, yaw: 0 },
   { category: 'bus', x: 28, z: -60, yaw: Math.PI / 2 }
 ];
+
+// engine category pitch flavors for audio (0..1)
+const ENGINE_PITCH: Record<VehicleCategory, number> = {
+  sedan: 0.55, cng: 0.8, rickshaw: 0.9, motorcycle: 0.65, bus: 0.25
+};
 
 export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const store = useGameStore.getState();
@@ -103,15 +115,21 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   await frame();
 
   store.setProgress(65, 'World data…');
-  const tile = await loadDhakaTile();
+  const streaming = createStreamingManager(() => ({} as never));
+  // initial tile: dhaka (preview fallback inside streaming)
+  const tile = await streaming.getActive();
   useGameStore.getState().setHud({
     preview: tile.preview,
     location: tile.name
   });
+  travelState.currentDistrict = streaming.currentDistrictId ?? 'dhaka';
+
   store.setProgress(75, 'World geometry…');
   const world = buildWorld(scene, physics, tile, prof.treeCount);
   const props = buildProps(tile);
   scene.add(props.group);
+  const interiors = buildInteriors(scene, physics);
+  const trafficLights = createTrafficLights(scene, tile);
   store.setProgress(85, 'Characters & traffic…');
   await frame();
 
@@ -130,6 +148,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const rain = new RainSystem(scene, 2400);
   const npcs = createNpcSystem(scene, tile, prof.npcCount);
   const traffic = createTrafficSystem(scene, tile, prof.trafficCount);
+  const audio: AudioSystem = createAudioSystem();
 
   const cleanupInput = initInput();
 
@@ -163,12 +182,17 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   };
   window.addEventListener('keydown', onKey);
 
+  const unlockAudio = () => audio.unlock();
+  window.addEventListener('pointerdown', unlockAudio, { once: true });
+  window.addEventListener('keydown', unlockAudio, { once: true });
+
   let disposed = false;
   let last = performance.now();
   let raf = 0;
   let fpsT = 0;
   let fpsN = 0;
   let hudT = 0;
+  let stepT = 0;
   let dayT = 0.22;
   const camState = { yaw: Math.PI, pitch: -0.18, dist: 6.4 };
   const camPos = new THREE.Vector3(4, 3, -34);
@@ -179,6 +203,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const dir = new THREE.Vector3();
   const want = new THREE.Vector3();
   let activeVehicle: Vehicle | null = null;
+  let inside: ReturnType<typeof interiors.insideOf> = null;
   let qualityFogFar = prof.fogFar;
   const rnd = () => Math.random();
 
@@ -228,6 +253,95 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     });
   }
 
+  function handleSaveLoad(): void {
+    const req = travelState.saveRequest;
+    if (!req) return;
+    travelState.saveRequest = null;
+    if (req.kind === 'save') {
+      saveGame(req.slot, {
+        player: { x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw: player.yaw },
+        dayT,
+        weatherKind: weather.kind,
+        quality: useGameStore.getState().quality,
+        district: travelState.currentDistrict
+      });
+    } else {
+      const data = loadGame(req.slot);
+      if (data) {
+        player.pos.set(data.player.x, data.player.y, data.player.z);
+        player.yaw = data.player.yaw;
+        dayT = data.dayT;
+      }
+    }
+  }
+
+  async function handleTravel(): Promise<void> {
+    const dest = travelState.travelRequest;
+    if (!dest || dest === travelState.currentDistrict) {
+      travelState.travelRequest = null;
+      return;
+    }
+    travelState.travelRequest = null;
+    travelState.travelProgress = 0.1;
+    useGameStore.getState().setStatus(`Traveling to ${dest}…`);
+    useGameStore.getState().setProgress(30, `Loading ${dest}…`);
+    const newTile = await streaming.travelTo(dest);
+    travelState.travelProgress = 0.6;
+    travelState.currentDistrict = dest;
+    // rebuild world
+    props.dispose();
+    world.dispose();
+    trafficLights.dispose();
+    npcs.dispose();
+    traffic.dispose();
+    interiors.dispose();
+    physics.dispose();
+    const freshPhysics = createCollisionWorld();
+    // note: rebinding requires the same variable usage below; use a wrapper
+    await rebuildWorld(newTile, freshPhysics);
+    travelState.travelProgress = 1;
+    useGameStore.getState().setProgress(100, 'Ready');
+    useGameStore.getState().setHud({
+      preview: newTile.preview,
+      location: newTile.name
+    });
+  }
+
+  async function rebuildWorld(newTile: typeof tile, freshPhysics: ReturnType<typeof createCollisionWorld>): Promise<void> {
+    // rebuild all tile-dependent systems in place
+    (physicsProxy as { current: ReturnType<typeof createCollisionWorld> }).current = freshPhysics;
+    const newWorld = buildWorld(scene, freshPhysics, newTile, prof.treeCount);
+    const newProps = buildProps(newTile);
+    scene.add(newProps.group);
+    const newInteriors = buildInteriors(scene, freshPhysics);
+    const newLights = createTrafficLights(scene, newTile);
+    const newNpcs = createNpcSystem(scene, newTile, prof.npcCount);
+    const newTraffic = createTrafficSystem(scene, newTile, prof.trafficCount);
+    // swap references used by the loop
+    Object.assign(worldRef, { world: newWorld, props: newProps, interiors: newInteriors, lights: newLights, npcs: newNpcs, traffic: newTraffic, physics: freshPhysics });
+    // refresh minimap
+    resetMinimap();
+    minimapState.roads = newTile.roads.map((r) => ({ x1: r.x1, z1: r.z1, x2: r.x2, z2: r.z2, width: r.width }));
+    minimapState.buildings = newTile.buildings.map((b) => ({ x: b.x, z: b.z, w: b.w, d: b.d }));
+    minimapState.water = newTile.water.map((w) => ({ x: w.cx, z: w.cz, r: w.r }));
+    // reset player position to the tile start
+    player.pos.set(4, 0, -40);
+    player.vel.set(0, 0, 0);
+    player.yaw = Math.PI;
+    if (activeVehicle) {
+      activeVehicle.occupied = false;
+      activeVehicle = null;
+      player.group.visible = true;
+      useGameStore.getState().setHud({ speed: null });
+    }
+  }
+
+  // mutable reference bag so the loop always sees the current systems
+  const worldRef = {
+    world, props, interiors, lights: trafficLights, npcs, traffic, physics
+  };
+  const physicsProxy = { current: physics };
+
   function loop(now: number): void {
     if (disposed) return;
     raf = requestAnimationFrame(loop);
@@ -238,7 +352,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       return;
     }
 
+    const R = worldRef;
     stepWeatherAndSky(dt);
+    handleSaveLoad();
+    trafficLights_update(R.lights, dt);
     const snap = readInput();
     camState.yaw -= snap.lookDX * 0.0042;
     camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
@@ -251,27 +368,46 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
         jumpQueued: snap.jumpQueued,
         camYaw: camState.yaw,
         dt,
-        collision: physics,
-        waterZones: world.waterZones
+        collision: R.physics,
+        waterZones: R.world.waterZones
       });
-      const water = evalWater(player.pos, world.waterZones);
+      const water = evalWater(player.pos, R.world.waterZones);
       applyBuoyancy(player.pos, player.vel, water.state, dt);
 
-      const near = nearestVehicle(fleet, player.pos, ENTER_RANGE);
-      useGameStore.getState().setHud({
-        prompt: near ? `Press E — ${near.spec.label}` : null
-      });
-      if (snap.actionPressed && near) {
-        enterVehicle(near, player);
-        activeVehicle = near;
+      // footsteps
+      stepT += dt;
+      const moveSpd = Math.hypot(player.vel.x, player.vel.z);
+      if (moveSpd > 0.5 && stepT > (snap.run ? 0.28 : 0.42)) {
+        stepT = 0;
+        audio.footstep();
+      }
+
+      // interiors: track inside state for prompts + ambience
+      inside = R.interiors.insideOf(player.pos);
+      audio.setAmbience(inside !== null);
+
+      // prompts: shop door > vehicle
+      const door = R.interiors.nearestDoor(player.pos, DOOR_RANGE);
+      const nearV = nearestVehicle(fleet, player.pos, ENTER_RANGE);
+      if (door) {
+        useGameStore.getState().setHud({ prompt: inside ? 'Exit shop' : `Enter ${door.label}` });
+      } else if (nearV) {
+        useGameStore.getState().setHud({ prompt: `Press E — ${nearV.spec.label}` });
+      } else {
+        useGameStore.getState().setHud({ prompt: null });
+      }
+      if (snap.actionPressed && nearV && !door) {
+        enterVehicle(nearV, player);
+        activeVehicle = nearV;
         useGameStore.getState().setHud({ prompt: null, speed: 0 });
+        audio.setAmbience(false);
       }
     } else {
       stepVehicle(activeVehicle, {
         moveX: snap.moveX,
         moveZ: snap.moveZ,
         dt,
-        collision: physics,
+        collision: R.physics,
         bound: BOUND,
         grip: weather.grip
       });
@@ -287,13 +423,18 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
           speed: Math.round(Math.abs(activeVehicle.speed) * 3.6)
         });
       }
+      // engine audio
+      const spd01 = Math.min(1, Math.abs(activeVehicle.speed) / activeVehicle.spec.maxSpeed);
+      audio.setEngine(ENGINE_PITCH[activeVehicle.category], spd01, true);
     }
+    if (!activeVehicle) audio.setEngine(0, 0, false);
 
-    // NPCs + traffic update around the player
-    const centerX = activeVehicle ? activeVehicle.pos.x : player.pos.x;
-    const centerZ = activeVehicle ? activeVehicle.pos.z : player.pos.z;
-    npcs.update(dt, centerX, centerZ);
-    traffic.update(dt, centerX, centerZ);
+    // rain audio follows intensity
+    audio.setRain(weather.intensity);
+
+    // traffic light obedience for NPC traffic
+    R.traffic.update(dt, player.pos.x, player.pos.z);
+    R.npcs.update(dt, player.pos.x, player.pos.z);
 
     // minimap feed
     minimapState.px = player.pos.x;
@@ -334,6 +475,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     }
   }
 
+  function trafficLights_update(lights: { update(dt: number): void }, dt: number): void {
+    lights.update(dt);
+  }
+
   function frame(): Promise<void> {
     return new Promise((r) => requestAnimationFrame(r));
   }
@@ -345,6 +490,11 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   }
   window.addEventListener('resize', onResize);
 
+  // consume travel requests from the UI
+  const travelTimer = setInterval(() => {
+    if (travelState.travelRequest) void handleTravel();
+  }, 250);
+
   last = performance.now();
   raf = requestAnimationFrame(loop);
 
@@ -352,17 +502,22 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     dispose() {
       disposed = true;
       cancelAnimationFrame(raf);
+      clearInterval(travelTimer);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKey);
       offQuality();
       offPause();
       cleanupInput();
+      audio.dispose();
       rain.dispose();
-      npcs.dispose();
-      traffic.dispose();
-      props.dispose();
-      world.dispose();
-      physics.dispose();
+      worldRef.props.dispose();
+      worldRef.interiors.dispose();
+      worldRef.lights.dispose();
+      worldRef.npcs.dispose();
+      worldRef.traffic.dispose();
+      worldRef.world.dispose();
+      worldRef.physics.dispose();
+      streaming.dispose();
       disposeMaterials();
       renderer.dispose();
     }
