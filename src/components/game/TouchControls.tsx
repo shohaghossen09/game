@@ -7,11 +7,12 @@ import { setJoystick, setButton, pressAction, queueJump } from '@/game/core/inpu
 export default function TouchControls() {
   const touch = useGameStore((s) => s.touch);
   const ready = useGameStore((s) => s.progress >= 100);
+  const paused = useGameStore((s) => s.paused);
   const baseRef = useRef<HTMLDivElement | null>(null);
   const knobRef = useRef<HTMLDivElement | null>(null);
   const active = useRef<number | null>(null);
 
-  if (!touch || !ready) return null;
+  if (!touch || !ready || paused) return null;
 
   const move = (clientX: number, clientY: number) => {
     const base = baseRef.current;
