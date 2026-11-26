@@ -43,6 +43,16 @@ const initialHud: HudState = {
   preview: false
 };
 
+type QualityListener = (q: Quality) => void;
+const qualityListeners = new Set<QualityListener>();
+
+/** Subscribe to quality changes — the engine registers to apply them live
+ *  (shadows, fog, pixel ratio) without a reboot. */
+export function onQualityChange(fn: QualityListener): () => void {
+  qualityListeners.add(fn);
+  return () => qualityListeners.delete(fn);
+}
+
 export const useGameStore = create<GameStore>((set) => ({
   progress: 0,
   status: 'Booting engine…',
@@ -60,15 +70,16 @@ export const useGameStore = create<GameStore>((set) => ({
   setBootError: (e) =>
     set((s) => ({
       bootError: e,
-      // a boot error means we are no longer booting — reflect it
       ...(e ? { bootPhase: 'failed' as BootPhase } : {})
     })),
   setBootPhase: (bootPhase) => set({ bootPhase }),
   setTouch: (touch) => set({ touch }),
-  setQuality: (quality) => set({ quality }),
+  setQuality: (quality) => {
+    set({ quality });
+    qualityListeners.forEach((fn) => fn(quality));
+  },
   setHud: (h) => {
     set((s) => {
-      // shallow-equality guard (audit A10): don't re-render when nothing changed
       let changed = false;
       for (const k of Object.keys(h) as (keyof HudState)[]) {
         if (s.hud[k] !== (h as HudState)[k]) {
