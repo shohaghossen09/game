@@ -47,12 +47,21 @@ function LoadingScreen() {
   const progress = useGameStore((s) => s.progress);
   const status = useGameStore((s) => s.status);
   const error = useGameStore((s) => s.bootError);
+  const ready = progress >= 100 && !error;
   return (
-    <div className={'loading' + (progress >= 100 && !error ? ' done' : '')}>
+    <div className={'loading' + (ready ? ' done' : '')}>
       <h1>BANGLADESH LIFE SIMULATOR</h1>
-      <div className="sub">DHAKA PROTOTYPE v0.1 · DHANMONDI TILE</div>
+      <div className="sub">DHAKA PROTOTYPE · DHANMONDI TILE</div>
       {error ? (
-        <div className="load-error">Failed to start: {error}</div>
+        <div className="load-error-box">
+          <div className="load-error">Failed to start: {error}</div>
+          <button
+            className="load-retry"
+            onClick={() => location.reload()}
+          >
+            Retry
+          </button>
+        </div>
       ) : (
         <>
           <div className="bar-wrap">
