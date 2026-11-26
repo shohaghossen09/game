@@ -201,7 +201,8 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     }
     prof.fogFar = np.fogFar;
     prof.pixelRatioCap = np.pixelRatioCap;
-    if (scene.fog) {
+    // FogBase has no near/far — narrow to THREE.Fog (what we constructed)
+    if (scene.fog instanceof THREE.Fog) {
       scene.fog.near = np.fogFar / 3;
       scene.fog.far = np.fogFar;
     }
@@ -315,7 +316,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     );
     const sky = skyNight.clone().lerp(skyDay, day);
     scene.background = sky;
-    if (scene.fog) scene.fog.color.copy(sky);
+    if (scene.fog instanceof THREE.Fog) scene.fog.color.copy(sky);
     hemi.intensity = 0.12 + day * 0.8;
   }
 
