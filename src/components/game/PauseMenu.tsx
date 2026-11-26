@@ -10,10 +10,8 @@ export default function PauseMenu() {
   const paused = useGameStore((s) => s.paused);
   const setPaused = useGameStore((s) => s.setPaused);
   const ready = useGameStore((s) => s.progress >= 100);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showSaves, setShowSaves] = useState(false);
-  const [showMap, setShowMap] = useState(false);
-  const [saveMsg, setSaveMsg] = useState('');
+  const [tab, setTab] = useState<'main' | 'settings' | 'saves' | 'map'>('main');
+  const [msg, setMsg] = useState('');
 
   if (!ready || !paused) return null;
 
@@ -28,17 +26,18 @@ export default function PauseMenu() {
     <div className="pause-backdrop">
       <div className="pause-card">
         <h2>PAUSED</h2>
-        {!showSettings && !showSaves && !showMap ? (
+        {tab === 'main' && (
           <>
             <button className="menu-btn" onClick={() => setPaused(false)}>Resume</button>
-            <button className="menu-btn" onClick={() => setShowMap(true)}>Bangladesh Map</button>
-            <button className="menu-btn" onClick={() => setShowSaves(true)}>Save / Load</button>
-            <button className="menu-btn" onClick={() => setShowSettings(true)}>Graphics Settings</button>
+            <button className="menu-btn" onClick={() => setTab('map')}>Bangladesh Map</button>
+            <button className="menu-btn" onClick={() => setTab('saves')}>Save / Load</button>
+            <button className="menu-btn" onClick={() => setTab('settings')}>Graphics Settings</button>
             <div className="pause-hint">
               WASD move · Shift run · Space jump · E vehicle · Esc pause
             </div>
           </>
-        ) : showSettings ? (
+        )}
+        {tab === 'settings' && (
           <>
             <h3>Quality Profile</h3>
             {qualities.map((q) => (
@@ -50,10 +49,11 @@ export default function PauseMenu() {
                 {q.label}{quality === q.id ? ' ✓' : ''}
               </button>
             ))}
-            <button className="menu-btn" onClick={() => setShowSettings(false)}>Back</button>
+            <button className="menu-btn" onClick={() => setTab('main')}>Back</button>
             <div className="pause-hint">Quality applies live.</div>
           </>
-        ) : showSaves ? (
+        )}
+        {tab === 'saves' && (
           <>
             <h3>Save / Load</h3>
             {[1, 2, 3].map((slot) => (
@@ -62,7 +62,7 @@ export default function PauseMenu() {
                   className="menu-btn half"
                   onClick={() => {
                     travelState.saveRequest = { slot, kind: 'save' };
-                    setSaveMsg(`Saved to slot ${slot}`);
+                    setMsg(`Saved to slot ${slot}`);
                   }}
                 >
                   Save {slot}
@@ -71,23 +71,24 @@ export default function PauseMenu() {
                   className="menu-btn half"
                   onClick={() => {
                     travelState.saveRequest = { slot, kind: 'load' };
-                    setSaveMsg(loadMsgFor(slot));
+                    setMsg(describeSave(slot));
                   }}
                 >
                   Load {slot}
                 </button>
               </div>
             ))}
-            {saveMsg && <div className="pause-hint">{saveMsg}</div>}
-            <button className="menu-btn" onClick={() => setShowSaves(false)}>Back</button>
+            {msg && <div className="pause-hint">{msg}</div>}
+            <button className="menu-btn" onClick={() => setTab('main')}>Back</button>
           </>
-        ) : (
+        )}
+        {tab === 'map' && (
           <>
-            <h3>Bangladesh — {64} Districts</h3>
+            <h3>Bangladesh — 64 Districts</h3>
             <div className="pause-hint" style={{ marginBottom: 8 }}>
-              Travel is enabled for districts with baked map data
-              (public/world/&lt;district&gt;.json). Others load a labeled
-              preview layout.
+              Travel to any district. Districts with baked map data
+              (public/world/&lt;district&gt;.json) load real OpenStreetMap
+              geometry; others load a labeled preview layout.
             </div>
             <div className="district-grid">
               {travelState.districts.map((d) => (
@@ -96,14 +97,15 @@ export default function PauseMenu() {
                   className={'menu-btn district' + (travelState.currentDistrict === d.id ? ' active' : '')}
                   onClick={() => {
                     travelState.travelRequest = d.id;
-                    setSaveMsg('');
+                    setMsg(`Traveling to ${d.name}…`);
                   }}
                 >
                   {d.name}
                 </button>
               ))}
             </div>
-            <button className="menu-btn" onClick={() => setShowMap(false)}>Back</button>
+            {msg && <div className="pause-hint">{msg}</div>}
+            <button className="menu-btn" onClick={() => setTab('main')}>Back</button>
           </>
         )}
       </div>
@@ -111,15 +113,14 @@ export default function PauseMenu() {
   );
 }
 
-function loadMsgFor(slot: number): string {
-  const raw = typeof localStorage !== 'undefined'
-    ? localStorage.getItem(`bls_save_v1_slot_${slot}`)
-    : null;
+function describeSave(slot: number): string {
+  if (typeof localStorage === 'undefined') return `Slot ${slot} unavailable`;
+  const raw = localStorage.getItem(`bls_save_v1_slot_${slot}`);
   if (!raw) return `Slot ${slot} is empty`;
   try {
     const data = JSON.parse(raw) as { savedAt: number };
     return `Loaded slot ${slot} (saved ${new Date(data.savedAt).toLocaleString()})`;
-  } {
+  } catch {
     return `Slot ${slot} unreadable`;
   }
 }
