@@ -1,7 +1,7 @@
 # Bangladesh Life Simulator
 
 Open-world life simulation of Bangladesh, playable in the browser.
-**Playable: Dhanmondi, Dhaka — v0.2.0.** Original IP.
+**v0.3.0 — 64-district travel enabled.** Original IP.
 
 ## Quick start
 
@@ -10,14 +10,16 @@ npm install
 npm run dev        # http://localhost:3000
 ```
 
-Recommended — bake real OpenStreetMap data for the playable tile:
+Bake real OpenStreetMap data (any of these, internet needed):
 
 ```bash
-npm run fetch:world   # writes public/world/dhanmondi.json (internet needed, ~30s)
+npm run fetch:world                  # Dhanmondi, Dhaka
+npm run fetch:district -- chattogram # any major district
+npm run fetch:district -- sylhet 3   # custom size in km
 ```
 
-Until that runs, the game loads a clearly labeled **PREVIEW** layout that is
-NOT real map data.
+Districts without baked data load a clearly labeled **PREVIEW** layout —
+never presented as real map data.
 
 ## Controls
 
@@ -27,28 +29,34 @@ NOT real map data.
 | Shift | Run |
 | Space | Jump |
 | E | Enter / exit nearest vehicle |
-| Esc | Pause menu |
+| Esc | Pause → map, saves, settings |
 | Mouse drag | Camera look |
 | Touch joystick + RUN/JUMP/E buttons | Mobile (auto-detected) |
 
-## What's in the game
+## What's in the game (v0.3.0)
 
-- Third-person character: walk, run, jump, swim (with underwater fog)
-- 5 drivable Bangladeshi vehicles: private car, CNG auto-rickshaw, rickshaw,
-  motorcycle, local bus — each with distinct physics
-- Living world: pedestrians walking sidewalks, traffic driving the road graph
-- Weather: clear, cloudy, rain, heavy rain, thunderstorm — rain particles,
+- Third-person character: walk, run, jump, swim (underwater fog), footsteps
+- 5 drivable vehicles: private car, CNG auto-rickshaw, rickshaw, motorcycle,
+  local bus — distinct physics per category, speed-pitched engine audio
+- 9 enterable shops with interiors: tea stall, grocery, mobile shop,
+  pharmacy, restaurant
+- Living world: pedestrians on sidewalks, traffic with car-following,
+  traffic lights at intersections
+- Weather: clear → cloudy → rain → heavy rain → thunderstorm — rain audio,
   slippery roads, reduced visibility, thunder flashes
-- Day/night cycle (~5 min), minimap, pause menu with live graphics settings
-- Quality profiles Low/Medium/High/Ultra (render scale, shadows, fog, NPC counts)
+- Day/night cycle, minimap, pause menu with live graphics settings
+- **Bangladesh map: travel to any of the 64 districts** (baked = real OSM
+  geometry; unbaked = labeled preview)
+- Save/load: 3 slots (position, time, weather, district)
+- All audio 100% procedural (WebAudio synthesis — zero licensed assets)
 
 ## Attribution
 
-World data pipeline uses (c) OpenStreetMap contributors data, licensed ODbL 1.0.
-The preview layout is original artistic content, labeled as such in-game.
+World data pipeline uses (c) OpenStreetMap contributors data, licensed
+ODbL 1.0. Baked tiles carry this attribution. The preview layouts are
+original artistic content, labeled as such in-game.
 
 ## Status
 
-Phases 1-5 complete. See DEVELOPMENT_STATUS.md for the honest list of what
-works and what does not, and ROADMAP.md for what comes next
-(interiors, audio, saves, 64 districts).
+Phases 1-6 complete. See DEVELOPMENT_STATUS.md for the honest gap list and
+ROADMAP.md for what's next (server backend, seamless streaming, WebGPU).
