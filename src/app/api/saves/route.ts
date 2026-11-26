@@ -6,6 +6,10 @@ import {
 
 export const runtime = 'nodejs';
 
+function sessionKey(req: Request): string {
+  return req.cookies.get(sessionCookieName)?.value?.slice(0, 16) ?? 'anon';
+}
+
 async function currentUser(req: Request) {
   const token = req.cookies.get(sessionCookieName)?.value;
   if (!token) return null;
@@ -20,8 +24,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
   }
   const url = new URL(req.url);
-  const slotRaw = url.searchParams.get('slot');
-  const slot = slotRaw !== null ? Number(slotRaw) : NaN;
+  const slot = Number(url.searchParams.get('slot'));
   if (!validateSlot(slot)) {
     return NextResponse.json({ error: 'Invalid slot.' }, { status: 400 });
   }
@@ -33,8 +36,7 @@ export async function GET(req: Request) {
 }
 
 export async function PUT(req: Request) {
-  const ip = req.headers.get('x-forwarded-for') ?? 'local';
-  if (!saveLimiter(`${userKey(req)}`)) {
+  if (!saveLimiter(sessionKey(req))) {
     return NextResponse.json({ error: 'Too many saves. Slow down.' }, { status: 429 });
   }
   const user = await currentUser(req);
@@ -59,8 +61,3 @@ export async function PUT(req: Request) {
   await saveStore.put(user.id, slot, body);
   return NextResponse.json({ ok: true });
 }
-
-function userKey(req: Request): string {
-  return req.cookies.get(sessionCookieName)?.value?.slice(0, 16) ?? 'anon';
-}
-void ip;
