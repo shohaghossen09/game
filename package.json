@@ -2,7 +2,7 @@
   "name": "bangladesh-life-simulator",
   "version": "0.1.0",
   "private": true,
-  "description": "Open-world life simulation of Bangladesh, playable in the browser. Phase 1: Dhanmondi, Dhaka. Original IP.",
+  "description": "Open-world life simulation of Bangladesh, playable in the browser. Phase 1 prototype: Dhanmondi, Dhaka. Original IP.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -11,7 +11,7 @@
     "fetch:world": "node scripts/fetch-dhaka.mjs"
   },
   "dependencies": {
-    "next": "14.2.5",
+    "next": "14.2.35",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "three": "0.160.1",
