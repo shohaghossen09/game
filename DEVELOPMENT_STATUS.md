@@ -1,48 +1,40 @@
-# Development Status — v0.3.0 (Phases 1-6)
+# Development Status — v0.4.0 (Phases 1-7)
 
 ## Implemented and committed
-- Engine, world, player, physics, vehicles (5 categories), water/swim, weather,
-  pedestrians, traffic AI, minimap, pause menu, quality profiles — see v0.2.0 notes
-- **Interiors (Phase 3 complete)**: 9 enterable shops on the main avenue —
-  doorway gaps, interior walls/floors, counters, shelves, awnings, point lights;
-  inside/outside detection; prompts; indoor ambience ducking
-- **Audio (Phase 4 complete)**: 100% procedural WebAudio — speed-pitched engine
-  loops per vehicle category, intensity-scaled rain noise, footsteps, ambience
-  bed; unlocked on first user gesture (autoplay policy compliant); zero
-  licensed assets (original by construction)
-- **Traffic lights (Phase 5 complete)**: cycling green/yellow/red with visual
-  lamps at avenue intersections; stop-line queries for traffic AI
-- **Saves (Phase 7 preview)**: 3 localStorage slots, versioned schema;
-  save/load player position, time-of-day, weather, quality, district
-- **District registry (Phase 6)**: all 64 districts with coordinates and
-  regional style keys (dhaka-urban, city-core, riverine, coastal, hill,
-  tea-garden, rural)
-- **Streaming (Phase 6)**: tile cache with LRU eviction, district travel via
-  the in-game map, full world rebuild on travel, preview fallback for
-  unbaked districts (clearly labeled)
-- **District baker**: `npm run fetch:district -- <id> [sizeKm]` bakes real
-  OpenStreetMap data for 16 major districts
+- Everything in v0.3.0: engine, world, player, physics, 5 vehicles, water/swim,
+  weather, pedestrians, traffic AI + lights, minimap, interiors, procedural
+  audio, 64-district travel, district baker
+- **Accounts (Phase 7)**: registration + login + logout with scrypt password
+  hashing (per-user salt, constant-time compare), 32-byte session tokens
+  stored sha256-hashed, httpOnly cookies (secure in production), no account
+  enumeration on login failure, input validation (username 3-20 chars,
+  password 8-128), per-IP rate limiting (register 5/h, login 10/10min)
+- **Cloud saves (Phase 7)**: server-authoritative — GET/PUT /api/saves with
+  session auth, per-user 3 slots, payload shape + size validation (64 KB cap),
+  server re-derives the owning user from the session (never trusts client
+  claims). Client falls back to localStorage offline; both copies kept on save
+- **Auth UI (Phase 7)**: /login page (login/register toggle), pause menu shows
+  signed-in state, sign in/out buttons, save/load labels show Cloud vs Local
 
-## Not yet implemented (honest)
-- PostGIS server-side tile hosting (tiles are static JSON files for now)
-- Distance-based streaming transitions (travel is currently menu-driven)
-- Rapier 3D physics swap (current AABB engine remains stable)
+## Store note (honest)
+Dev uses in-memory stores — they reset on server restart. The AuthStore and
+SaveStore interfaces are the production contracts; a Postgres/PostGIS adapter
+implementing them is the remaining production task (schema + adapter, no
+route changes needed).
+
+## Not yet implemented
+- Postgres/PostGIS adapters for the stores (production persistence)
+- Password recovery (email/sender infra required)
 - WebGPU renderer (Phase 8)
-- Multiplayer, accounts, server-authoritative saves (Phase 7 proper)
-- Traffic light obedience wired into traffic cars (lights render + cycle;
-  cars slow via car-following only — the shouldStop() API exists, wiring it
-  into the traffic update is the next small task)
+- Multiplayer / WebSockets
+- Seamless streaming transitions (travel still rebuilds, ~200ms)
 
 ## Known issues
-- District travel rebuilds everything synchronously (~200ms hitch) — fine for
-  menu travel; seamless streaming needs async chunk loading (Phase 8)
-- Interiors place shops at fixed avenue slots; real OSM building data may
-  overlap them (baker strips building footprints overlapping doorways in a
-  future pass)
-- NPC edge-picking is O(edges) on arrival — fine at current counts
+- Same as v0.3.0 (see git history): travel hitch, fixed interior slots,
+  O(edges) NPC re-picking
+- In-memory stores mean dev accounts don't survive restarts (expected for dev)
 
 ## Next tasks
-1. Wire traffic-light shouldStop() into traffic car update
-2. Async chunked travel loading (remove the hitch)
-3. Regional building style application by district style key
-4. Server backend: auth + cloud saves (Phase 7 proper)
+1. Postgres adapter for AuthStore + SaveStore (production persistence)
+2. Phase 8: async chunked travel, adaptive resolution, occlusion tuning
+3. Password recovery flow (needs email sender)
