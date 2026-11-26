@@ -3,6 +3,8 @@
 import { useEffect, useRef } from 'react';
 import Hud from './Hud';
 import TouchControls from './TouchControls';
+import Minimap from './Minimap';
+import PauseMenu from './PauseMenu';
 import { useGameStore } from '@/game/core/store';
 
 export default function GameClient() {
@@ -38,6 +40,8 @@ export default function GameClient() {
       <canvas ref={canvasRef} className="game-canvas" />
       <Hud />
       <TouchControls />
+      <Minimap />
+      <PauseMenu />
       <LoadingScreen />
     </>
   );
@@ -50,7 +54,7 @@ function LoadingScreen() {
   return (
     <div className={'loading' + (progress >= 100 && !error ? ' done' : '')}>
       <h1>BANGLADESH LIFE SIMULATOR</h1>
-      <div className="sub">DHAKA PROTOTYPE v0.1 · DHANMONDI TILE</div>
+      <div className="sub">DHAKA PROTOTYPE v0.2 · DHANMONDI TILE</div>
       {error ? (
         <div className="load-error">Failed to start: {error}</div>
       ) : (
