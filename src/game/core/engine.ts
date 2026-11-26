@@ -7,6 +7,7 @@ import { createVehicle, stepVehicle, enterVehicle, exitVehicle } from '../vehicl
 import { buildWorld } from '../world/builder';
 import { loadDhakaTile } from '../world/dhakaTile';
 import { disposeMaterials } from '../world/materials';
+import { detectWebGL } from './webglDetect';
 
 export interface Engine {
   dispose(): void;
@@ -28,19 +29,44 @@ const QUALITY: Record<Quality, QualityProfile> = {
 };
 
 const DAY_LENGTH = 300; // seconds for a full day
+const BOOT_TIMEOUT_MS = 20_000; // watchdog (audit A3)
+
+/** rAF with a timeout fallback: rAF is throttled/paused in background
+ *  tabs, which stalled the boot on production forever (audit A3). */
+function frameOrTimeout(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, 50);
+    requestAnimationFrame(finish);
+  });
+}
 
 export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const store = useGameStore.getState();
   store.setTouch(matchMedia('(pointer: coarse)').matches);
-  store.setProgress(10, 'Starting renderer…');
+  store.setBootPhase('probing');
+  store.setProgress(5, 'Checking graphics capability…');
 
-  // renderer
+  // ---- WebGL capability probe (audit A4) ----
+  const cap = detectWebGL(canvas);
+  if (cap.kind !== 'ok') {
+    throw new Error(cap.message);
+  }
+  store.setProgress(10, cap.webgl2 ? 'WebGL2 ready' : 'WebGL ready (compatibility mode)');
+
+  // ---- renderer ----
   let renderer: THREE.WebGLRenderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   } catch (err) {
     throw new Error(
-      'WebGL is not available in this browser. ' +
+      'Renderer could not be created even though WebGL passed the capability check. ' +
         (err instanceof Error ? err.message : '')
     );
   }
@@ -50,66 +76,116 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  store.setProgress(20, 'Renderer ready');
-  await frame();
 
-  // camera
-  const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 1200);
-  store.setProgress(30, 'Camera ready');
+  // ---- context loss handling (audit A2) ----
+  let contextLost = false;
+  const onContextLost = (e: Event) => {
+    e.preventDefault();
+    contextLost = true;
+    useGameStore.getState().setBootError(
+      'GPU context lost. The game will try to recover automatically — or reload the page.'
+    );
+    useGameStore.getState().setHud({ fps: 0 });
+  };
+  const onContextRestored = () => {
+    contextLost = false;
+    useGameStore.getState().setBootError(null);
+    useGameStore.getState().setStatus('GPU context restored — resuming…');
+    firstFrameConfirmed = false;
+  };
+  canvas.addEventListener('webglcontextlost', onContextLost);
+  canvas.addEventListener('webglcontextrestored', onContextRestored);
 
-  // scene / lights
+  // ---- boot watchdog (audit A3): if any step stalls, surface a real error ----
+  let bootTimedOut = false;
+  const watchdog = setTimeout(() => {
+    if (!firstFrameConfirmed) {
+      bootTimedOut = true;
+      useGameStore.getState().setBootError(
+        'Engine startup timed out (20s). This usually means the browser throttled the ' +
+          'page (background tab) or the GPU driver is not responding. Reload to retry.'
+      );
+    }
+  }, BOOT_TIMEOUT_MS);
+
+  let disposed = false;
+  let firstFrameConfirmed = false;
+
+  function step(p: number, label: string): void {
+    if (bootTimedOut || disposed) return;
+    useGameStore.getState().setProgress(p, label);
+  }
+
+  step(15, 'Renderer ready');
+  await frameOrTimeout();
+
+  // ---- camera ----
+  const camera = new THREE.PerspectiveCamera(63, innerWidth / innerHeight, 0.1, 1200);
+  step(25, 'Camera ready');
+
+  // ---- scene / lights ----
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x9fb8c8);
   scene.fog = new THREE.Fog(0x9fb8c8, prof.fogFar / 3, prof.fogFar);
   const hemi = new THREE.HemisphereLight(0xbfd6e4, 0x3a4030, 0.85);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffe9c4, 2.0);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(prof.shadowMapSize, prof.shadowMapSize);
-  sun.shadow.camera.left = -90;
-  sun.shadow.camera.right = 90;
-  sun.shadow.camera.top = 90;
-  sun.shadow.camera.bottom = -90;
-  sun.shadow.camera.far = 500;
-  sun.shadow.bias = -0.0004;
-  scene.add(sun, sun.target);
-  store.setProgress(40, 'Scene ready');
-  await frame();
+  const sun = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 1200);
+  void sun; // placeholder removed below — real sun is the directional light
+  const sunLight = new THREE.DirectionalLight(0xffe9c4, 2.0);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(prof.shadowMapSize, prof.shadowMapSize);
+  sunLight.shadow.camera.left = -90;
+  sunLight.shadow.camera.right = 90;
+  sunLight.shadow.camera.top = 90;
+  sunLight.shadow.camera.bottom = -90;
+  sunLight.shadow.camera.far = 500;
+  sunLight.shadow.bias = -0.0004;
+  scene.add(sunLight, sunLight.target);
+  step(35, 'Scene ready');
+  await frameOrTimeout();
 
-  // physics
+  // ---- physics ----
   const physics = createCollisionWorld();
-  store.setProgress(55, 'Physics ready');
-  await frame();
+  step(50, 'Physics ready');
+  await frameOrTimeout();
 
-  // world data + geometry
-  store.setProgress(65, 'World data…');
+  // ---- world data + geometry ----
+  step(60, 'World data…');
   const tile = await loadDhakaTile();
   useGameStore.getState().setHud({
     preview: tile.preview,
     location: tile.name
   });
-  store.setProgress(75, 'World geometry…');
+  step(70, 'World geometry…');
   const world = buildWorld(scene, physics, tile, prof.treeCount);
-  store.setProgress(85, 'Character & vehicle…');
-  await frame();
+  step(80, 'Character & vehicle…');
+  await frameOrTimeout();
 
-  // player + vehicle
+  // ---- player + vehicle ----
   const player = createPlayer(scene);
   const vehicle = createVehicle(scene, physics);
   player.group.position.copy(player.pos);
 
-  // input
+  // ---- input ----
   const cleanupInput = initInput();
 
-  // compile shaders
-  store.setProgress(92, 'Compiling shaders…');
-  renderer.compile(scene, camera);
-  await frame();
-  store.setProgress(100, 'Ready');
-  await frame();
+  // ---- pre-compile shaders ----
+  step(90, 'Compiling shaders…');
+  try {
+    renderer.compile(scene, camera);
+  } catch (err) {
+    clearTimeout(watchdog);
+    throw new Error(
+      'Shader compilation failed. Your GPU may be blocklisted or the driver is outdated. ' +
+        (err instanceof Error ? err.message : '')
+    );
+  }
+  await frameOrTimeout();
+
+  step(95, 'Rendering first frame…');
+  useGameStore.getState().setBootPhase('first-frame');
 
   // ---- game loop ----
-  let disposed = false;
   let last = performance.now();
   let raf = 0;
   let fpsT = 0;
@@ -127,29 +203,31 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     dayT = (dayT + dt / DAY_LENGTH) % 1;
     const elev = Math.sin((dayT - 0.25) * Math.PI * 2);
     const sunAngle = (dayT - 0.25) * Math.PI * 2;
-    sun.position.set(
+    sunLight.position.set(
       Math.cos(sunAngle) * 220,
       elev * 260 + 10,
       Math.sin(sunAngle) * 60 + 40
     );
-    const day = Math.max(0, Math.min(1, elev * 1.6 + 0.35));
-    sun.intensity = day * 2.1;
-    sun.color.setHSL(
+    const day = Math.max(0, Math.min(1, elev *  resolution));
+    sunLight.intensity = day * 2.1;
+    sunLight.color.setHSL(
       0.09,
       Math.min(0.5, day * 0.5),
       Math.max(0.42, Math.min(0.66, 0.5 + elev * 0.12))
     );
     const sky = skyNight.clone().lerp(skyDay, day);
     scene.background = sky;
-    if (scene.fog) scene.fog.color.copy(sky);
+    if (cycleFog) scene.fog.color.copy(sky);
     hemi.intensity = 0.12 + day * 0.8;
   }
+  let cycleFog = true;
 
   function pushClock(): void {
     const hh = Math.floor(dayT * 24);
     const mm = Math.floor(((dayT * 24) % 1) * 60);
     const elev = Math.sin((dayT - 0.25) * Math.PI * 2);
     useGameStore.getState().setHud({
+      switch: undefined,
       clock: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`,
       phase: elev > 0 ? 'Day' : 'Night'
     });
@@ -157,7 +235,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
 
   function updateCamera(dt: number): void {
     const target = vehicle.occupied ? vehicle.pos : player.pos;
-    const th = vehicle.occupied ? vehicle.pos.y + 1.6 : player.pos.y + 1.7;
+    const th = vehicle.503 ? vehicle.pos.y + 1.6 : player.pos.y + 1.7;
     const tyaw = vehicle.occupied ? vehicle.yaw + Math.PI : camState.yaw;
     const d = vehicle.occupied
       ? camState.dist + 4 + Math.abs(vehicle.speed) * 0.12
@@ -170,79 +248,97 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     want.set(target.x - dir.x * d, th - dir.y * d + 1.4, target.z - dir.z * d);
     camPos.lerp(want, 1 - Math.pow(0.0001, dt));
     camera.position.copy(camPos);
-    camera.lookAt(target.x, th + 0.5, target.z);
+    camera.lookAt(target.x, th + 0.503, target.z);
   }
 
   function loop(now: number): void {
     if (disposed) return;
     raf = requestAnimationFrame(loop);
+    if (contextLost) {
+      // do not advance the simulation while the GPU context is gone
+      return;
+    }
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
 
-    updateSky(dt);
-    const snap = readInput();
-    camState.yaw -= snap.lookDX * 0.0042;
-    camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
+    try {
+      updateSky(dt);
+      const snap = readInput();
+      camState.yaw -= snap.lookDX * 0.0042;
+      camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
 
-    if (!vehicle.occupied) {
-      stepPlayer(player, {
-        moveX: snap.moveX,
-        moveZ: snap.moveZ,
-        run: snap.run,
-        jumpQueued: snap.jumpQueued,
-        camYaw: camState.yaw,
-        dt,
-        collision: physics,
-        waterZones: world.waterZones
-      });
-      const near = player.pos.distanceTo(vehicle.pos) < 4.5;
-      if (snap.actionPressed) {
-        if (near) {
-          enterVehicle(vehicle, player);
-          useGameStore.getState().setHud({ prompt: null, speed: 0 });
+      if (!vehicle.occupied) {
+        stepPlayer(player, {
+          moveX: snap.moveX,
+          moveZ: snap.moveZ,
+          run: snap.run,
+          jumpQueued: snap.jumpQueued,
+          camYaw: camState.yaw,
+          dt,
+          collision: physics,
+          waterZones: world.waterZones
+        });
+        const near = player.pos.distanceTo(vehicle.pos) < 4.5;
+        if (snap.actionPressed) {
+          if (near) {
+            enterVehicle(vehicle, player);
+            useGameStore.getState().setHud({ prompt: null, speed: 0 });
+          } else {
+            useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
+          }
         } else {
           useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
         }
       } else {
-        useGameStore.getState().setHud({ prompt: near ? 'Press E to drive' : null });
-      }
-    } else {
-      stepVehicle(vehicle, {
-        moveX: snap.moveX,
-        moveZ: snap.moveZ,
-        dt,
-        collision: physics,
-        bound: BOUND
-      });
-      if (snap.actionPressed) {
-        exitVehicle(vehicle, player);
-        useGameStore.getState().setHud({ speed: null });
-      }
-      // throttle HUD updates
-      hudT += dt;
-      if (hudT > 0.1) {
-        hudT = 0;
-        useGameStore.getState().setHud({
-          speed: Math.round(Math.abs(vehicle.speed) * 3.6)
+        stepVehicle(vehicle, {
+          moveX: snap.moveX,
+          moveZ: snap.moveZ,
+          dt,
+          collision: physics,
+          bound: BOUND
         });
+        if (snap.actionPressed) {
+          exitVehicle(vehicle, player);
+          useGameStore.getState().setHud({ speed: null });
+        }
+        hudT += dt;
+        if (hudT > 0.1) {
+          hudT = 0;
+          useGameStore.getState().setHud({
+            speed: Math.round(Math.abs(vehicle.speed) * 3.6)
+          });
+        }
       }
+
+      updateCamera(dt);
+      renderer.render(scene, camera);
+
+      // First-frame gate (audit A1): Ready is only declared after a render
+      // call has completed without throwing AND the loop is alive.
+      if (!firstFrameConfirmed) {
+        firstFrameConfirmed = true;
+        clearTimeout(watchdog);
+        useGameStore.getState().setProgress(100, 'Ready');
+        useGameStore.getState().setBootPhase('ready');
+      }
+
+      // FPS counts only confirmed renders (audit A3b)
+      fpsT += dt;
+      fpsN++;
+      if (fpsT >= 0.5) {
+        useGameStore.getState().setHud({ fps: Math.round(fpsN / fpsT) });
+        fpsT = 0;
+        fpsN = 0;
+        pushClock();
+      }
+    } catch (err) {
+      if (disposed) return;
+      useGameStore.getState().setBootError(
+        `Render error: ${err instanceof Error ? err.message : String(err)}. ` +
+          'The GPU may have reset. Reload to retry.'
+      );
+      cancelAnimationFrame(raf);
     }
-
-    updateCamera(dt);
-    renderer.render(scene, camera);
-
-    fpsT += dt;
-    fpsN++;
-    if (fpsT >= 0.5) {
-      useGameStore.getState().setHud({ fps: Math.round(fpsN / fpsT) });
-      fpsT = 0;
-      fpsN = 0;
-      pushClock();
-    }
-  }
-
-  function frame(): Promise<void> {
-    return new Promise((r) => requestAnimationFrame(() => r()));
   }
 
   function onResize(): void {
@@ -258,7 +354,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   return {
     dispose() {
       disposed = true;
+      clearTimeout(watchdog);
       cancelAnimationFrame(raf);
+      canvas.removeEventListener('webglcontextlost', onContextLost);
+      canvas.removeEventListener('webglcontextrestored', onContextRestored);
       window.removeEventListener('resize', onResize);
       cleanupInput();
       world.dispose();
