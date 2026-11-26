@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import {
-  authStore, saveStore, tokenHashOf, sessionCookieName,
+  stores, tokenHashOf, sessionCookieName,
   validateSavePayload, validateSlot, saveLimiter
 } from '@/game/backend/store';
 
@@ -10,25 +10,25 @@ function sessionKey(req: Request): string {
   return req.cookies.get(sessionCookieName)?.value?.slice(0, 16) ?? 'anon';
 }
 
-async function currentUser(req: Request) {
-  const token = req.cookies.get(sessionCookieName)?.value;
-  if (!token) return null;
-  const session = await authStore.getSession(tokenHashOf(token));
-  if (!session) return null;
-  return authStore.getUserById(session.userId);
-}
-
 export async function GET(req: Request) {
-  const user = await currentUser(req);
+  const { auth, saves } = await stores();
+  const token = req.cookies.get(sessionCookieName)?.value;
+  if (!token) {
+    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+  }
+  const session = await auth.getSession(tokenHashOf(token));
+  if (!session) {
+    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+  }
+  const user = await auth.getUserById(session.userId);
   if (!user) {
     return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
   }
-  const url = new URL(req.url);
-  const slot = Number(url.searchParams.get('slot'));
+  const slot = Number(new URL(req.url).searchParams.get('slot'));
   if (!validateSlot(slot)) {
     return NextResponse.json({ error: 'Invalid slot.' }, { status: 400 });
   }
-  const save = await saveStore.get(user.id, slot);
+  const save = await saves.get(user.id, slot);
   if (!save) {
     return NextResponse.json({ error: 'Empty slot.' }, { status: 404 });
   }
@@ -39,12 +39,20 @@ export async function PUT(req: Request) {
   if (!saveLimiter(sessionKey(req))) {
     return NextResponse.json({ error: 'Too many saves. Slow down.' }, { status: 429 });
   }
-  const user = await currentUser(req);
+  const { auth, saves } = await stores();
+  const token = req.cookies.get(sessionCookieName)?.value;
+  if (!token) {
+    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+  }
+  const session = await auth.getSession(tokenHashOf(token));
+  if (!session) {
+    return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
+  }
+  const user = await auth.getUserById(session.userId);
   if (!user) {
     return NextResponse.json({ error: 'Not authenticated.' }, { status: 401 });
   }
-  const url = new URL(req.url);
-  const slot = Number(url.searchParams.get('slot'));
+  const slot = Number(new URL(req.url).searchParams.get('slot'));
   if (!validateSlot(slot)) {
     return NextResponse.json({ error: 'Invalid slot.' }, { status: 400 });
   }
@@ -58,6 +66,6 @@ export async function PUT(req: Request) {
   if (invalid) {
     return NextResponse.json({ error: invalid }, { status: 400 });
   }
-  await saveStore.put(user.id, slot, body);
+  await saves.put(user.id, slot, body);
   return NextResponse.json({ ok: true });
 }
