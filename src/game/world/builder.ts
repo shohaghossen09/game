@@ -7,6 +7,10 @@ import type { DhakaTile } from './dhakaTile';
 export interface BuiltWorld {
   group: THREE.Group;
   waterZones: { x: number; z: number; r: number }[];
+  /** detail layer group (balconies/trims) for LOD culling */
+  buildingDetailGroup: THREE.Group;
+  /** coarse layer group (windows) for LOD culling */
+  buildingCoarseGroup: THREE.Group;
   dispose(): void;
 }
 
@@ -19,7 +23,6 @@ export function buildWorld(
   const group = new THREE.Group();
   scene.add(group);
   const waterZones: { x: number; z: number; r: number }[] = [];
-  // dispose registry scoped to THIS build (fixes shared-state bug on rebuilds)
   const disposers: (() => void)[] = [];
 
   // ---------- ground ----------
@@ -74,7 +77,7 @@ export function buildWorld(
     }
   }
 
-  // ---------- lane markings (merged into ONE mesh — audit A11) ----------
+  // ---------- lane markings (merged into ONE mesh) ----------
   {
     const laneGeos: THREE.BoxGeometry[] = [];
     for (let z = -260; z < 260; z += 9) {
@@ -87,7 +90,7 @@ export function buildWorld(
     group.add(laneMesh);
   }
 
-  // ---------- buildings (modular, instanced elements — Phase D) ----------
+  // ---------- buildings (modular, instanced, LOD-split — Phases D+H) ----------
   const buildings = buildBuildings(tile);
   group.add(buildings.group);
   for (const b of tile.buildings) {
@@ -161,6 +164,8 @@ export function buildWorld(
   return {
     group,
     waterZones,
+    buildingDetailGroup: buildings.detailGroup,
+    buildingCoarseGroup: buildings.coarseGroup,
     dispose() {
       scene.remove(group);
       buildings.dispose();
@@ -173,9 +178,7 @@ export function buildWorld(
   };
 }
 
-/** Minimal geometry merge for the lane strips: concatenates position and
- *  index arrays of translated clones into one BufferGeometry. Local
- *  equivalent of the mergeGeometries addon, kept here to avoid the import. */
+/** Minimal geometry merge for the lane strips. */
 function mergeGeometriesManually(geos: THREE.BoxGeometry[]): THREE.BufferGeometry {
   const out = new THREE.BufferGeometry();
   let vertCount = 0;
