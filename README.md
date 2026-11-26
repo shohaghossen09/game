@@ -1,7 +1,7 @@
 # Bangladesh Life Simulator
 
 Open-world life simulation of Bangladesh, playable in the browser.
-**v0.3.0 — 64-district travel enabled.** Original IP.
+**v0.4.0 — accounts + cloud saves.** Original IP.
 
 ## Quick start
 
@@ -29,34 +29,42 @@ never presented as real map data.
 | Shift | Run |
 | Space | Jump |
 | E | Enter / exit nearest vehicle |
-| Esc | Pause → map, saves, settings |
+| Esc | Pause → map, saves, account, settings |
 | Mouse drag | Camera look |
 | Touch joystick + RUN/JUMP/E buttons | Mobile (auto-detected) |
 
-## What's in the game (v0.3.0)
+## What's in the game (v0.4.0)
 
 - Third-person character: walk, run, jump, swim (underwater fog), footsteps
 - 5 drivable vehicles: private car, CNG auto-rickshaw, rickshaw, motorcycle,
   local bus — distinct physics per category, speed-pitched engine audio
-- 9 enterable shops with interiors: tea stall, grocery, mobile shop,
-  pharmacy, restaurant
-- Living world: pedestrians on sidewalks, traffic with car-following,
-  traffic lights at intersections
-- Weather: clear → cloudy → rain → heavy rain → thunderstorm — rain audio,
-  slippery roads, reduced visibility, thunder flashes
-- Day/night cycle, minimap, pause menu with live graphics settings
-- **Bangladesh map: travel to any of the 64 districts** (baked = real OSM
-  geometry; unbaked = labeled preview)
-- Save/load: 3 slots (position, time, weather, district)
-- All audio 100% procedural (WebAudio synthesis — zero licensed assets)
+- 9 enterable shops with interiors
+- Living world: pedestrians, traffic AI, traffic lights
+- Weather: clear → cloudy → rain → heavy rain → thunderstorm
+- Day/night cycle, minimap, live graphics settings
+- **Bangladesh map: travel to any of the 64 districts**
+- **Accounts: register/sign in at /login** — scrypt hashing, httpOnly session
+  cookies, rate limiting
+- **Cloud saves: 3 slots, server-authoritative when signed in; local
+  localStorage saves otherwise (both kept)**
+- All audio 100% procedural (WebAudio — zero licensed assets)
+
+## Security notes
+
+- Passwords: scrypt with per-user salt, constant-time verification
+- Sessions: 32-byte tokens, stored sha256-hashed, httpOnly + SameSite cookies
+- Saves: server validates shape/size and derives the owner from the session —
+  never from client claims
+- Rate limiting on register, login, and save endpoints
 
 ## Attribution
 
 World data pipeline uses (c) OpenStreetMap contributors data, licensed
-ODbL 1.0. Baked tiles carry this attribution. The preview layouts are
-original artistic content, labeled as such in-game.
+ODbL 1.0. Baked tiles carry this attribution. Preview layouts are original
+artistic content, labeled as such in-game.
 
 ## Status
 
-Phases 1-6 complete. See DEVELOPMENT_STATUS.md for the honest gap list and
-ROADMAP.md for what's next (server backend, seamless streaming, WebGPU).
+Phases 1-7 complete. Dev stores are in-memory (reset on restart); Postgres
+adapters are the production persistence task. See DEVELOPMENT_STATUS.md and
+ROADMAP.md.
