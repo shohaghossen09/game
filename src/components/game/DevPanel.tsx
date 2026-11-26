@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import { perfStats } from '@/game/core/perf';
 import { useGameStore } from '@/game/core/store';
 
-/** Developer performance panel — toggle with F3 (or the HUD dev button).
- *  All numbers are real measurements from renderer.info and the FPS
- *  sampler; unsupported metrics are labeled, never faked. */
+/** Developer performance panel — toggle with F3. All numbers are real
+ *  measurements from renderer.info and the FPS sampler; unsupported
+ *  metrics are labeled, never faked. */
 
 export default function DevPanel() {
   const ready = useGameStore((s) => s.progress >= 100);
@@ -52,6 +52,9 @@ export default function DevPanel() {
         }
       />
       <Row label="Renderer" value={perfStats.renderer} />
+      <Row label="Active tile" value={perfStats.tileActive} />
+      <Row label="Tiles cached" value={String(perfStats.tileCached)} />
+      <Row label="Tiles loading" value={String(perfStats.tileInFlight)} />
     </div>
   );
 }
