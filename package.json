@@ -1,8 +1,8 @@
 {
   "name": "bangladesh-life-simulator",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Open-world life simulation of Bangladesh, playable in the browser. Phase 1 prototype: Dhanmondi, Dhaka. Original IP.",
+  "description": "Open-world life simulation of Bangladesh, playable in the browser. Dhanmondi prototype with 64-district travel architecture, PBR environment, LOD, adaptive resolution, live quality profiles, real perf monitoring. Original IP.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
