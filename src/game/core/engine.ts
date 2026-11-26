@@ -22,6 +22,7 @@ import { createTrafficLights } from '../traffic/trafficLights';
 import { buildInteriors, type InteriorSystem } from '../interiors/interiors';
 import { createAudioSystem, type AudioSystem } from '../audio/audio';
 import { saveGame, loadGame } from '../saves/saves';
+import { cloudSave, cloudLoad } from '../backend/client';
 import { createStreamingManager } from '../geography/streaming';
 import { travelState } from './travelState';
 import { previewTileFallback } from './tileFallback';
@@ -251,25 +252,42 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     });
   }
 
+  function saveDataNow() {
+    return {
+      version: 1 as const,
+      savedAt: Date.now(),
+      player: { x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw: player.yaw },
+      dayT,
+      weatherKind: weather.kind,
+      quality: useGameStore.getState().quality,
+      district: travelState.currentDistrict
+    };
+  }
+
+  function applyLoaded(data: {
+    player: { x: number; y: number; z: number; yaw: number };
+    dayT: number;
+  }): void {
+    player.pos.set(data.player.x, data.player.y, data.player.z);
+    player.yaw = data.player.yaw;
+    dayT = data.dayT;
+  }
+
   function handleSaveLoad(): void {
     const req = travelState.saveRequest;
     if (!req) return;
     travelState.saveRequest = null;
     if (req.kind === 'save') {
-      saveGame(req.slot, {
-        player: { x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw: player.yaw },
-        dayT,
-        weatherKind: weather.kind,
-        quality: useGameStore.getState().quality,
-        district: travelState.currentDistrict
+      const data = saveDataNow();
+      void cloudSave(req.slot, data).then((r) => {
+        travelState.saveResult = r.msg;
       });
+      saveGame(req.slot, data); // always keep a local copy too
     } else {
-      const data = loadGame(req.slot);
-      if (data) {
-        player.pos.set(data.player.x, data.player.y, data.player.z);
-        player.yaw = data.player.yaw;
-        dayT = data.dayT;
-      }
+      void cloudLoad(req.slot).then((r) => {
+        travelState.saveResult = r.msg;
+        if (r.ok && r.data) applyLoaded(r.data);
+      });
     }
   }
 
@@ -411,7 +429,6 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
 
     audio.setRain(weather.intensity);
 
-    // traffic obeys lights via look-ahead
     traffic.update(dt, player.pos.x, player.pos.z, (x, z, axis) =>
       lights.shouldStop(x, z, axis)
     );
