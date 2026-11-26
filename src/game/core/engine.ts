@@ -50,7 +50,6 @@ function frameOrTimeout(): Promise<void> {
 export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   const store = useGameStore.getState();
   store.setTouch(matchMedia('(pointer: coarse)').matches);
-  store.setBootPhase('probing');
   store.setProgress(5, 'Checking graphics capability…');
 
   // ---- WebGL capability probe (audit A4) ----
@@ -79,40 +78,35 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
 
   // ---- context loss handling (audit A2) ----
   let contextLost = false;
+  let firstFrameConfirmed = false;
   const onContextLost = (e: Event) => {
     e.preventDefault();
     contextLost = true;
-    useGameStore.getState().setBootError(
-      'GPU context lost. The game will try to recover automatically — or reload the page.'
-    );
+    useGameStore.getState().setStatus('GPU context lost — waiting for recovery…');
     useGameStore.getState().setHud({ fps: 0 });
   };
   const onContextRestored = () => {
     contextLost = false;
-    useGameStore.getState().setBootError(null);
-    useGameStore.getState().setStatus('GPU context restored — resuming…');
     firstFrameConfirmed = false;
+    useGameStore.getState().setStatus('GPU context restored — resuming…');
   };
   canvas.addEventListener('webglcontextlost', onContextLost);
   canvas.addEventListener('webglcontextrestored', onContextRestored);
 
-  // ---- boot watchdog (audit A3): if any step stalls, surface a real error ----
-  let bootTimedOut = false;
+  // ---- boot watchdog (audit A3) ----
   const watchdog = setTimeout(() => {
     if (!firstFrameConfirmed) {
-      bootTimedOut = true;
       useGameStore.getState().setBootError(
-        'Engine startup timed out (20s). This usually means the browser throttled the ' +
-          'page (background tab) or the GPU driver is not responding. Reload to retry.'
+        'Engine startup timed out (20s). This usually means the browser throttled ' +
+          'the page (background tab) or the GPU driver is not responding. Reload to retry.'
       );
     }
   }, BOOT_TIMEOUT_MS);
 
   let disposed = false;
-  let firstFrameConfirmed = false;
 
   function step(p: number, label: string): void {
-    if (bootTimedOut || disposed) return;
+    if (disposed) return;
     useGameStore.getState().setProgress(p, label);
   }
 
@@ -120,7 +114,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   await frameOrTimeout();
 
   // ---- camera ----
-  const camera = new THREE.PerspectiveCamera(63, innerWidth / innerHeight, 0.1, 1200);
+  const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 1200);
   step(25, 'Camera ready');
 
   // ---- scene / lights ----
@@ -129,18 +123,16 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   scene.fog = new THREE.Fog(0x9fb8c8, prof.fogFar / 3, prof.fogFar);
   const hemi = new THREE.HemisphereLight(0xbfd6e4, 0x3a4030, 0.85);
   scene.add(hemi);
-  const sun = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 1200);
-  void sun; // placeholder removed below — real sun is the directional light
-  const sunLight = new THREE.DirectionalLight(0xffe9c4, 2.0);
-  sunLight.castShadow = true;
-  sunLight.shadow.mapSize.set(prof.shadowMapSize, prof.shadowMapSize);
-  sunLight.shadow.camera.left = -90;
-  sunLight.shadow.camera.right = 90;
-  sunLight.shadow.camera.top = 90;
-  sunLight.shadow.camera.bottom = -90;
-  sunLight.shadow.camera.far = 500;
-  sunLight.shadow.bias = -0.0004;
-  scene.add(sunLight, sunLight.target);
+  const sun = new THREE.DirectionalLight(0xffe9c4, 2.0);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(prof.shadowMapSize, prof.shadowMapSize);
+  sun.shadow.camera.left = -90;
+  sun.shadow.camera.right = 90;
+  sun.shadow.camera.top = 90;
+  sun.shadow.camera.bottom = -90;
+  sun.shadow.camera.far = 500;
+  sun.shadow.bias = -0.0004;
+  scene.add(sun, sun.target);
   step(35, 'Scene ready');
   await frameOrTimeout();
 
@@ -181,9 +173,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     );
   }
   await frameOrTimeout();
-
   step(95, 'Rendering first frame…');
-  useGameStore.getState().setBootPhase('first-frame');
 
   // ---- game loop ----
   let last = performance.now();
@@ -203,31 +193,29 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     dayT = (dayT + dt / DAY_LENGTH) % 1;
     const elev = Math.sin((dayT - 0.25) * Math.PI * 2);
     const sunAngle = (dayT - 0.25) * Math.PI * 2;
-    sunLight.position.set(
+    sun.position.set(
       Math.cos(sunAngle) * 220,
       elev * 260 + 10,
       Math.sin(sunAngle) * 60 + 40
     );
-    const day = Math.max(0, Math.min(1, elev *  resolution));
-    sunLight.intensity = day * 2.1;
-    sunLight.color.setHSL(
+    const day = Math.max(0, Math.min(1, elev * 1.6 + 0.35));
+    sun.intensity = day * 2.1;
+    sun.color.setHSL(
       0.09,
       Math.min(0.5, day * 0.5),
       Math.max(0.42, Math.min(0.66, 0.5 + elev * 0.12))
     );
     const sky = skyNight.clone().lerp(skyDay, day);
     scene.background = sky;
-    if (cycleFog) scene.fog.color.copy(sky);
+    if (scene.fog) scene.fog.color.copy(sky);
     hemi.intensity = 0.12 + day * 0.8;
   }
-  let cycleFog = true;
 
   function pushClock(): void {
     const hh = Math.floor(dayT * 24);
     const mm = Math.floor(((dayT * 24) % 1) * 60);
     const elev = Math.sin((dayT - 0.25) * Math.PI * 2);
     useGameStore.getState().setHud({
-      switch: undefined,
       clock: `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`,
       phase: elev > 0 ? 'Day' : 'Night'
     });
@@ -235,7 +223,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
 
   function updateCamera(dt: number): void {
     const target = vehicle.occupied ? vehicle.pos : player.pos;
-    const th = vehicle.503 ? vehicle.pos.y + 1.6 : player.pos.y + 1.7;
+    const th = vehicle.occupied ? vehicle.pos.y + 1.6 : player.pos.y + 1.7;
     const tyaw = vehicle.occupied ? vehicle.yaw + Math.PI : camState.yaw;
     const d = vehicle.occupied
       ? camState.dist + 4 + Math.abs(vehicle.speed) * 0.12
@@ -248,7 +236,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     want.set(target.x - dir.x * d, th - dir.y * d + 1.4, target.z - dir.z * d);
     camPos.lerp(want, 1 - Math.pow(0.0001, dt));
     camera.position.copy(camPos);
-    camera.lookAt(target.x, th + 0.503, target.z);
+    camera.lookAt(target.x, th + 0.5, target.z);
   }
 
   function loop(now: number): void {
@@ -313,13 +301,12 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       updateCamera(dt);
       renderer.render(scene, camera);
 
-      // First-frame gate (audit A1): Ready is only declared after a render
-      // call has completed without throwing AND the loop is alive.
+      // First-frame gate (audit A1): Ready only after a render call
+      // completed without throwing AND the loop is alive.
       if (!firstFrameConfirmed) {
         firstFrameConfirmed = true;
         clearTimeout(watchdog);
         useGameStore.getState().setProgress(100, 'Ready');
-        useGameStore.getState().setBootPhase('ready');
       }
 
       // FPS counts only confirmed renders (audit A3b)
