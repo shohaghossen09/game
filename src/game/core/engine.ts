@@ -26,6 +26,9 @@ import { cloudSave, cloudLoad } from '../backend/client';
 import { createStreamingManager } from '../geography/streaming';
 import { travelState } from './travelState';
 import { previewTileFallback } from './tileFallback';
+import { createAdaptiveResolution } from './adaptive';
+import { detectGpu } from './gpuDetect';
+import { createStagedLoader } from './stagedLoader';
 
 export interface Engine {
   dispose(): void;
@@ -79,8 +82,10 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     );
   }
   const prof = QUALITY[useGameStore.getState().quality] ?? QUALITY.high;
+  const adaptive = createAdaptiveResolution();
   const applyResolution = () => {
-    renderer.setPixelRatio(Math.min(devicePixelRatio, prof.pixelRatioCap));
+    const ratio = Math.min(devicePixelRatio, prof.pixelRatioCap) * adaptive.scale;
+    renderer.setPixelRatio(ratio);
     renderer.setSize(innerWidth, innerHeight, false);
   };
   applyResolution();
@@ -110,6 +115,13 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   scene.add(sun, sun.target);
   store.setProgress(40, 'Scene ready');
   await frame();
+
+  // GPU capability probe (non-blocking; WebGL2 stays the renderer)
+  void detectGpu().then((cap) => {
+    useGameStore.getState().setStatus(
+      cap.webgpu ? 'WebGPU available (renderer: WebGL2)' : 'Renderer: WebGL2'
+    );
+  });
 
   let physics = createCollisionWorld();
   store.setProgress(55, 'Physics ready');
@@ -167,6 +179,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     }
     prof.fogFar = np.fogFar;
     prof.pixelRatioCap = np.pixelRatioCap;
+    adaptive.reset();
     applyResolution();
   });
 
@@ -194,6 +207,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   let hudT = 0;
   let stepT = 0;
   let dayT = 0.22;
+  let traveling = false;
   const camState = { yaw: Math.PI, pitch: -0.18, dist: 6.4 };
   const camPos = new THREE.Vector3(4, 3, -34);
   const skyDay = new THREE.Color(0x9fb8c8);
@@ -205,6 +219,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
   let activeVehicle: Vehicle | null = null;
   let qualityFogFar = prof.fogFar;
   const rnd = () => Math.random();
+  const staged = createStagedLoader();
 
   function stepWeatherAndSky(dt: number): void {
     stepWeather(weather, dt, rnd);
@@ -282,7 +297,7 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       void cloudSave(req.slot, data).then((r) => {
         travelState.saveResult = r.msg;
       });
-      saveGame(req.slot, data); // always keep a local copy too
+      saveGame(req.slot, data);
     } else {
       void cloudLoad(req.slot).then((r) => {
         travelState.saveResult = r.msg;
@@ -291,53 +306,99 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     }
   }
 
+  /** Staged async travel: the frame loop keeps rendering (with the loading
+   *  overlay up) while the rebuild happens a step per frame. */
   async function handleTravel(): Promise<void> {
     const dest = travelState.travelRequest;
-    if (!dest || dest === travelState.currentDistrict) {
+    if (!dest || dest === travelState.currentDistrict || traveling) {
       travelState.travelRequest = null;
       return;
     }
     travelState.travelRequest = null;
-    travelState.travelProgress = 0.1;
-    useGameStore.getState().setProgress(30, `Loading ${dest}…`);
+    traveling = true;
+    travelState.travelProgress = 0.05;
+    useGameStore.getState().setProgress(20, `Loading ${dest}…`);
     const newTile = await streaming.travelTo(dest);
-    travelState.travelProgress = 0.6;
     travelState.currentDistrict = dest;
 
-    props.dispose();
-    world.dispose();
-    lights.dispose();
-    npcs.dispose();
-    traffic.dispose();
-    interiors.dispose();
-    physics.dispose();
+    const old = { props, world, lights, npcs, traffic, interiors, physics };
+    let newWorld!: ReturnType<typeof buildWorld>;
+    let newProps!: ReturnType<typeof buildProps>;
+    let newInteriors!: InteriorSystem;
+    let newLights!: ReturnType<typeof createTrafficLights>;
+    let newNpcs!: ReturnType<typeof createNpcSystem>;
+    let newTraffic!: ReturnType<typeof createTrafficSystem>;
+    let newPhysics!: ReturnType<typeof createCollisionWorld>;
 
-    physics = createCollisionWorld();
-    world = buildWorld(scene, physics, newTile, prof.treeCount);
-    props = buildProps(newTile);
-    scene.add(props.group);
-    interiors = buildInteriors(scene, physics);
-    lights = createTrafficLights(scene, newTile);
-    npcs = createNpcSystem(scene, newTile, prof.npcCount);
-    traffic = createTrafficSystem(scene, newTile, prof.trafficCount);
-    tile = newTile;
+    try {
+      await staged.run(
+        [
+          { label: `Unloading ${travelState.travelTarget ?? 'old tile'}…`, fn: () => {} },
+          { label: 'Disposing old systems…', fn: () => {
+            old.props.dispose();
+            old.world.dispose();
+            old.lights.dispose();
+            old.npcs.dispose();
+            old.traffic.dispose();
+            old.interiors.dispose();
+            old.physics.dispose();
+          }},
+          { label: 'Building terrain & roads…', fn: () => {
+            newPhysics = createCollisionWorld();
+            newWorld = buildWorld(scene, newPhysics, newTile, prof.treeCount);
+          }},
+          { label: 'Placing props & shops…', fn: () => {
+            newProps = buildProps(newTile);
+            scene.add(newProps.group);
+            newInteriors = buildInteriors(scene, newPhysics);
+          }},
+          { label: 'Setting up traffic…', fn: () => {
+            newLights = createTrafficLights(scene, newTile);
+            newNpcs = createNpcSystem(scene, newTile, prof.npcCount);
+            newTraffic = createTrafficSystem(scene, newTile, prof.trafficCount);
+          }},
+          { label: 'Finalizing…', fn: () => {
+            physics = newPhysics;
+            world = newWorld;
+            props = newProps;
+            interiors = newInteriors;
+            lights = newLights;
+            npcs = newNpcs;
+            traffic = newTraffic;
+            tile = newTile;
 
-    resetMinimap();
-    minimapState.roads = newTile.roads.map((r) => ({ x1: r.x1, z1: r.z1, x2: r.x2, z2: r.z2, width: r.width }));
-    minimapState.buildings = newTile.buildings.map((b) => ({ x: b.x, z: b.z, w: b.w, d: b.d }));
-    minimapState.water = newTile.water.map((w) => ({ x: w.cx, z: w.cz, r: w.r }));
+            resetMinimap();
+            minimapState.roads = newTile.roads.map((r) => ({ x1: r.x1, z1: r.z1, x2: r.x2, z2: r.z2, width: r.width }));
+            minimapState.buildings = newTile.buildings.map((b) => ({ x: b.x, z: b.z, w: b.w, d: b.d }));
+            minimapState.water = newTile.water.map((w) => ({ x: w.cx, z: w.cz, r: w.r }));
 
-    player.pos.set(4, 0, -40);
-    player.vel.set(0, 0, 0);
-    player.yaw = Math.PI;
-    if (activeVehicle) {
-      activeVehicle.occupied = false;
-      activeVehicle = null;
-      player.group.visible = true;
-      useGameStore.getState().setHud({ speed: null });
+            player.pos.set(4, 0, -40);
+            player.vel.set(0, 0, 0);
+            player.yaw = Math.PI;
+            if (activeVehicle) {
+              activeVehicle.occupied = false;
+              activeVehicle = null;
+              player.group.visible = true;
+              useGameStore.getState().setHud({ speed: null });
+            }
+          }}
+        ],
+        (p, label) => {
+          travelState.travelProgress = p;
+          useGameStore.getState().setProgress(20 + p * 75, label);
+        }
+      );
+    } catch (err) {
+      useGameStore.getState().setBootError(
+        `Travel failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+      traveling = false;
+      return;
     }
 
     travelState.travelProgress = 1;
+    traveling = false;
+    adaptive.reset();
     useGameStore.getState().setProgress(100, 'Ready');
     useGameStore.getState().setHud({
       preview: newTile.preview,
@@ -354,85 +415,89 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
       renderer.render(scene, camera);
       return;
     }
+    // during travel the loop keeps running; world refs are consistent because
+    // the swap happens in one atomic step at the end of the staged build
+    const isTraveling = traveling;
 
     stepWeatherAndSky(dt);
     handleSaveLoad();
-    lights.update(dt);
+    if (!isTraveling) lights.update(dt);
     const snap = readInput();
     camState.yaw -= snap.lookDX * 0.0042;
     camState.pitch = Math.max(-1.1, Math.min(0.5, camState.pitch - snap.lookDY * 0.0042));
 
-    if (!activeVehicle) {
-      stepPlayer(player, {
-        moveX: snap.moveX,
-        moveZ: snap.moveZ,
-        run: snap.run,
-        jumpQueued: snap.jumpQueued,
-        camYaw: camState.yaw,
-        dt,
-        collision: physics,
-        waterZones: world.waterZones
-      });
-      const water = evalWater(player.pos, world.waterZones);
-      applyBuoyancy(player.pos, player.vel, water.state, dt);
-
-      stepT += dt;
-      const moveSpd = Math.hypot(player.vel.x, player.vel.z);
-      if (moveSpd > 0.5 && stepT > (snap.run ? 0.28 : 0.42)) {
-        stepT = 0;
-        audio.footstep();
-      }
-
-      const inside = interiors.insideOf(player.pos);
-      audio.setAmbience(inside !== null);
-
-      const door = interiors.nearestDoor(player.pos, DOOR_RANGE);
-      const nearV = nearestVehicle(fleet, player.pos, ENTER_RANGE);
-      if (door) {
-        useGameStore.getState().setHud({ prompt: 'Enter shop' });
-      } else if (nearV) {
-        useGameStore.getState().setHud({ prompt: `Press E — ${nearV.spec.label}` });
-      } else {
-        useGameStore.getState().setHud({ prompt: null });
-      }
-      if (snap.actionPressed && nearV && !door) {
-        enterVehicle(nearV, player);
-        activeVehicle = nearV;
-        useGameStore.getState().setHud({ prompt: null, speed: 0 });
-        audio.setAmbience(false);
-      }
-    } else {
-      stepVehicle(activeVehicle, {
-        moveX: snap.moveX,
-        moveZ: snap.moveZ,
-        dt,
-        collision: physics,
-        bound: BOUND,
-        grip: weather.grip
-      });
-      if (snap.actionPressed) {
-        exitVehicle(activeVehicle, player);
-        useGameStore.getState().setHud({ speed: null });
-        activeVehicle = null;
-      }
-      hudT += dt;
-      if (hudT > 0.1) {
-        hudT = 0;
-        useGameStore.getState().setHud({
-          speed: Math.round(Math.abs(activeVehicle.speed) * 3.6)
+    if (!isTraveling) {
+      if (!activeVehicle) {
+        stepPlayer(player, {
+          moveX: snap.moveX,
+          moveZ: snap.moveZ,
+          run: snap.run,
+          jumpQueued: snap.jumpQueued,
+          camYaw: camState.yaw,
+          dt,
+          collision: physics,
+          waterZones: world.waterZones
         });
+        const water = evalWater(player.pos, world.waterZones);
+        applyBuoyancy(player.pos, player.vel, water.state, dt);
+
+        stepT += dt;
+        const moveSpd = Math.hypot(player.vel.x, player.vel.z);
+        if (moveSpd > 0.5 && stepT > (snap.run ? 0.28 : 0.42)) {
+          stepT = 0;
+          audio.footstep();
+        }
+
+        const inside = interiors.insideOf(player.pos);
+        audio.setAmbience(inside !== null);
+
+        const door = interiors.nearestDoor(player.pos, DOOR_RANGE);
+        const nearV = nearestVehicle(fleet, player.pos, ENTER_RANGE);
+        if (door) {
+          useGameStore.getState().setHud({ prompt: 'Enter shop' });
+        } else if (nearV) {
+          useGameStore.getState().setHud({ prompt: `Press E — ${nearV.spec.label}` });
+        } else {
+          useGameStore.getState().setHud({ prompt: null });
+        }
+        if (snap.actionPressed && nearV && !door) {
+          enterVehicle(nearV, player);
+          activeVehicle = nearV;
+          useGameStore.getState().setHud({ prompt: null, speed: 0 });
+          audio.setAmbience(false);
+        }
+      } else {
+        stepVehicle(activeVehicle, {
+          moveX: snap.moveX,
+          moveZ: snap.moveZ,
+          dt,
+          collision: physics,
+          bound: BOUND,
+          grip: weather.grip
+        });
+        if (snap.actionPressed) {
+          exitVehicle(activeVehicle, player);
+          useGameStore.getState().setHud({ speed: null });
+          activeVehicle = null;
+        }
+        hudT += dt;
+        if (hudT > 0.1) {
+          hudT = 0;
+          useGameStore.getState().setHud({
+            speed: Math.round(Math.abs(activeVehicle.speed) * 3.6)
+          });
+        }
+        const spd01 = Math.min(1, Math.abs(activeVehicle.speed) / activeVehicle.spec.maxSpeed);
+        audio.setEngine(ENGINE_PITCH[activeVehicle.category], spd01, true);
       }
-      const spd01 = Math.min(1, Math.abs(activeVehicle.speed) / activeVehicle.spec.maxSpeed);
-      audio.setEngine(ENGINE_PITCH[activeVehicle.category], spd01, true);
+      if (!activeVehicle) audio.setEngine(0, 0, false);
+      audio.setRain(weather.intensity);
+
+      traffic.update(dt, player.pos.x, player.pos.z, (x, z, axis) =>
+        lights.shouldStop(x, z, axis)
+      );
+      npcs.update(dt, player.pos.x, player.pos.z);
     }
-    if (!activeVehicle) audio.setEngine(0, 0, false);
-
-    audio.setRain(weather.intensity);
-
-    traffic.update(dt, player.pos.x, player.pos.z, (x, z, axis) =>
-      lights.shouldStop(x, z, axis)
-    );
-    npcs.update(dt, player.pos.x, player.pos.z);
 
     minimapState.px = player.pos.x;
     minimapState.pz = player.pos.z;
@@ -464,12 +529,19 @@ export async function createEngine(canvas: HTMLCanvasElement): Promise<Engine> {
     fpsT += dt;
     fpsN++;
     if (fpsT >= 0.5) {
-      useGameStore.getState().setHud({ fps: Math.round(fpsN / fpsT) });
+      const fps = Math.round(fpsN / fpsT);
+      useGameStore.getState().setHud({ fps });
+      adaptive.reportFps(fps);
+      if (adaptive.scale !== lastAdaptiveScale) {
+        lastAdaptiveScale = adaptive.scale;
+        applyResolution();
+      }
       fpsT = 0;
       fpsN = 0;
       pushClock();
     }
   }
+  let lastAdaptiveScale = adaptive.scale;
 
   function frame(): Promise<void> {
     return new Promise((r) => requestAnimationFrame(r));
