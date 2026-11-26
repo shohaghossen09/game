@@ -2,14 +2,23 @@
 
 import { useEffect, useState } from 'react';
 import { perfStats } from '@/game/core/perf';
-import { useGameStore } from '@/game/core/store';
+import { useGameStore, type Quality } from '@/game/core/store';
 
 /** Developer performance panel — toggle with F3. All numbers are real
  *  measurements from renderer.info and the FPS sampler; unsupported
- *  metrics are labeled, never faked. */
+ *  metrics are labeled, never faked. Quality profiles switch live. */
+
+const QUALITY_LABELS: Record<Quality, string> = {
+  low: 'LOW',
+  medium: 'MEDIUM',
+  high: 'HIGH',
+  ultra: 'ULTRA'
+};
 
 export default function DevPanel() {
   const ready = useGameStore((s) => s.progress >= 100);
+  const quality = useGameStore((s) => s.quality);
+  const setQuality = useGameStore((s) => s.setQuality);
   const [visible, setVisible] = useState(false);
   const [, force] = useState(0);
 
@@ -39,7 +48,6 @@ export default function DevPanel() {
       <Row label="Frame time" value={`${perfStats.frameMs.toFixed(1)} ms`} />
       <Row label="Draw calls" value={String(perfStats.drawCalls)} />
       <Row label="Triangles" value={perfStats.triangles.toLocaleString()} />
-      <Row label="Points" value={String(perfStats.points)} />
       <Row label="Geometries (GPU)" value={String(perfStats.geometries)} />
       <Row label="Textures (GPU)" value={String(perfStats.textures)} />
       <Row label="Shader programs" value={String(perfStats.programs)} />
@@ -55,6 +63,18 @@ export default function DevPanel() {
       <Row label="Active tile" value={perfStats.tileActive} />
       <Row label="Tiles cached" value={String(perfStats.tileCached)} />
       <Row label="Tiles loading" value={String(perfStats.tileInFlight)} />
+      <div className="dev-sep" />
+      <div className="dev-quality">
+        {(Object.keys(QUALITY_LABELS) as Quality[]).map((q) => (
+          <button
+            key={q}
+            className={'dev-qbtn' + (quality === q ? ' active' : '')}
+            onClick={() => setQuality(q)}
+          >
+            {QUALITY_LABELS[q]}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
